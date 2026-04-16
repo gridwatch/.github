@@ -22,7 +22,8 @@
 
 ## Our Pledge
 
-We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
+We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education,
+socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
 
 We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community.
 
@@ -52,7 +53,8 @@ Community leaders have the right and responsibility to remove, edit, or reject c
 
 ## Scope
 
-This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces. Examples of representing our community include using an official e-mail address, posting via an official social media account, or acting as an appointed representative at an online or offline event.
+This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces. Examples of representing our community include using an official e-mail address, posting via an official social media account, or acting as an
+appointed representative at an online or offline event.
 
 ## Enforcement
 
@@ -76,13 +78,15 @@ Community leaders will follow these Community Impact Guidelines in determining t
 
 **Community Impact**: A violation through a single incident or series of actions.
 
-**Consequence**: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified amount of time. This includes avoiding interactions in community spaces as well as external channels like social media. Violating these terms may lead to a temporary or permanent ban.
+**Consequence**: A warning with consequences for continued behavior. No interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, for a specified amount of time. This includes avoiding interactions in community spaces as well as external
+channels like social media. Violating these terms may lead to a temporary or permanent ban.
 
 ### Temporary Ban
 
 **Community Impact**: A serious violation of community standards, including sustained inappropriate behavior.
 
-**Consequence**: A temporary ban from any sort of interaction or public communication with the community for a specified amount of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban.
+**Consequence**: A temporary ban from any sort of interaction or public communication with the community for a specified amount of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this
+period. Violating these terms may lead to a permanent ban.
 
 ### Permanent Ban
 
