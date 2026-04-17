@@ -77,7 +77,7 @@ Version constants live in [`infrastructure-github/locals.tf`](https://github.com
 
 Container images and release tags use **date-based versions**, not semantic versioning:
 
-```text
+```
 vYYYYMMDD-N
 ```
 
