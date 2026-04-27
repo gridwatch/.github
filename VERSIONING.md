@@ -43,16 +43,16 @@ This range is declared in the `terraform` stanza of every `terraform.tf`.
 
 Providers are pinned to a **major-version range** with a specific patch-version floor:
 
-* starts at an exact known-good patch release (e.g. `>= 6.11.1`)
+* starts at an exact known-good patch release (e.g. `>= 6.12.0`)
 * ends by excluding the next major-version release (e.g. `< 7.0.0`)
 * **uses `>=`, never `~>`** — the pessimistic operator masks intentional major-version holds
 
 ```hcl
 required_providers {
-  # see https://registry.terraform.io/providers/integrations/github/6.11.1/docs
+  # see https://registry.terraform.io/providers/integrations/github/6.12.0/docs
   github = {
     source  = "integrations/github"
-    version = ">= 6.11.1, < 7.0.0"
+    version = ">= 6.12.0, < 7.0.0"
   }
 }
 ```
