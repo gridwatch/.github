@@ -49,7 +49,7 @@ Providers are pinned to a **major-version range** with a specific patch-version 
 
 ```hcl
 required_providers {
-  # see https://registry.terraform.io/providers/integrations/github/6.12.0/docs
+  # see https://registry.terraform.io/providers/integrations/github/6.12.1/docs
   github = {
     source  = "integrations/github"
     version = ">= 6.12.0, < 7.0.0"
