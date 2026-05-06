@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Code of Conduct
 
 > This document describes the Code of Conduct for [@gridwatch](https://github.com/gridwatch).
