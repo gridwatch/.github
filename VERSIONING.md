@@ -65,8 +65,8 @@ Actions are pinned to **exact tag versions** and accompanied by a `# see` commen
 
 ```yaml
 - name: Checkout
-  # see https://github.com/actions/checkout/releases/tag/v6.0.2
-  uses: actions/checkout@v6.0.2
+  # see https://github.com/actions/checkout/releases/tag/v7.0.0
+  uses: actions/checkout@v7.0.0
 ```
 
 Version constants live in [`infrastructure-github/locals.tf`](https://github.com/gridwatch/infrastructure-github/blob/main/locals.tf) and are templated into workflow files via Terraform.
