@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v6.0.2
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
 
       # see: https://github.com/actions/setup-node/releases/tag/v6.3.0
       - uses: actions/setup-node@v7.0.0
