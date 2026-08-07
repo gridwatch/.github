@@ -1,0 +1,12 @@
+# CODEOWNERS
+#
+# Managed by infrastructure-github. Edits made here are overwritten on the next
+# apply — change `reviewer_teams` in that repo's `locals.tf` instead.
+#
+# The listed teams are requested for review automatically when a pull request
+# touches a matching path. Requested, not required: `github_branch_protection.tf`
+# sets `require_code_owner_review = false`, so a review is never a merge gate.
+#
+# see https://docs.github.com/articles/about-code-owners
+
+* @gridwatch/reviewers
