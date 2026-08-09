@@ -1,0 +1,19 @@
+---
+
+name: Super-Linter
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  superlinter:
+    uses: gridwatch/tooling/.github/workflows/superlinter-prose.yml@main
+    with:
+      copy-yamllint-config: true
+    secrets:
+      REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
