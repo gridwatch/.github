@@ -1,5 +1,8 @@
 ---
 
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+
 name: Super-Linter
 
 on:
