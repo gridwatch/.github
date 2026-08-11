@@ -1,0 +1,75 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Swift macOS App Test
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: 'Xcode project file'
+        type: string
+        required: true
+      scheme:
+        description: 'Xcode scheme to test'
+        type: string
+        required: true
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+
+      # Deliberately NO open-source-toolchain install here: forcing TOOLCHAINS=swift makes
+      # SPM manifest compilation fail on the runner (posix_spawn linker errors) — the runner
+      # Xcode's own bundled Swift is the standard, working toolchain for xcodebuild.
+      - name: Install XcodeGen
+        env:
+          XCODEGEN_VERSION: "2.46.0"
+          XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+        run: |
+          install_dir="$(mktemp -d)"
+          zip="${install_dir}/xcodegen.zip"
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${zip}"
+          echo "${XCODEGEN_SHA256}  ${zip}" | shasum -a 256 -c -
+          unzip -q "${zip}" -d "${install_dir}"
+          echo "${install_dir}/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run tests
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+        run: |
+          # Code signing is disabled for CI: a test run needs no signed product, and an app
+          # with entitlements (iCloud, etc.) would otherwise demand a provisioning profile
+          # the runner cannot mint non-interactively.
+          xcodebuild -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            test
