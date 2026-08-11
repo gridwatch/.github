@@ -1,0 +1,304 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Build and Push Container Image
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Image name without registry prefix'
+        type: string
+        required: true
+      version:
+        description: 'Image version tag (from git tag or dispatch input)'
+        type: string
+        required: true
+      dhi-login:
+        description: 'Log in to dhi.io for base image access during build'
+        type: boolean
+        default: false
+      sbom:
+        description: >-
+          Generate an SPDX SBOM and fail the build on critical
+          vulnerabilities. Attaching the SBOM to the image as an
+          attestation requires either cosign or github-attestations
+        type: boolean
+        default: false
+      cosign:
+        description: 'Sign image with Cosign, and attest the SBOM when sbom is also set'
+        type: boolean
+        default: false
+      github-attestations:
+        description: >-
+          Also publish SBOM and build-provenance attestations to GitHub.
+          Requires a plan where the attestations API is available for
+          private org repos, otherwise every run fails these steps
+        type: boolean
+        default: false
+      ghcr:
+        description: >-
+          Also push the image to GHCR, so it can be pulled without an
+          Azure account. The same build is tagged twice and pushed to
+          both registries, so the two carry an identical digest. Off by
+          default: a package appearing in the org's registry is a
+          decision, not a side effect of a workflow change
+        type: boolean
+        default: false
+    secrets:
+      # The registry this builds into. Set on each container repo by
+      # infrastructure-platform, which owns the registry itself.
+      ACR_NAME:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      DHI_USERNAME:
+        required: false
+      DHI_PASSWORD:
+        required: false
+      # Cross-repo GitHub PAT for Composer to clone private VCS
+      # packages declared in the consumer's composer.json. When set,
+      # it's wrapped into a github-oauth COMPOSER_AUTH JSON blob and
+      # exposed to `docker build` as a BuildKit secret (id=composer_auth)
+      # — NOT a build-arg, which would land in image metadata and the
+      # build cache. Optional; absent callers build unauthenticated.
+      COMPOSER_AUTH_TOKEN:
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+  attestations: write
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    # Registry identity defined once and referenced by every step below — login,
+    # build tag, push, attest, cosign — so the name can't drift between steps.
+    #
+    # ACR_NAME arrives as a secret rather than a literal: infrastructure-platform
+    # owns the registry and already pushes AZURE_* to these repos, so it pushes
+    # the name alongside them. A hardcoded value here is a second source of truth
+    # that a registry rename would silently strand.
+    env:
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
+      # GHCR rejects an uppercase path, and `github.repository_owner` is
+      # interpolated rather than hardcoded so a fork pushes to its own namespace.
+      GHCR_LOGIN_SERVER: ghcr.io
+      GHCR_OWNER: ${{ github.repository_owner }}
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      - name: Set version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            *$'\n'*|*$'\r'*)
+              echo "Invalid version: must not contain newlines" >&2
+              exit 1
+              ;;
+          esac
+          printf 'VERSION=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+
+      # see: https://github.com/Azure/login/releases/tag/v3.0.0
+      - name: Log in to Azure
+        uses: azure/login@v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        run: az acr login --name "$ACR_NAME"
+
+      # GITHUB_TOKEN carries `packages: write` from the permissions block, so
+      # GHCR needs no separate credential — unlike ACR, which needs the OIDC
+      # federated identity.
+      - name: Log in to GHCR
+        if: inputs.ghcr
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login "$GHCR_LOGIN_SERVER" -u "${{ github.actor }}" --password-stdin
+
+      - name: Log in to dhi.io
+        if: inputs.dhi-login
+        run: printf '%s' "$DHI_PASSWORD" | docker login dhi.io -u "$DHI_USERNAME" --password-stdin
+        env:
+          DHI_USERNAME: ${{ secrets.DHI_USERNAME }}
+          DHI_PASSWORD: ${{ secrets.DHI_PASSWORD }}
+
+      - name: Build image
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          COMPOSER_AUTH_TOKEN: ${{ secrets.COMPOSER_AUTH_TOKEN }}
+          # Needed here as well as on the push below: an unset GHCR leaves the
+          # second `-t` off, and the push then fails on a tag that was never
+          # applied rather than on anything to do with the registry.
+          GHCR: ${{ inputs.ghcr }}
+        run: |
+          # Always pass --secret so consumer Containerfiles can
+          # unconditionally use `RUN --mount=type=secret,id=composer_auth`.
+          # When no token is supplied the secret file is empty and the
+          # Containerfile's `if [ -s ... ]` guard skips it. The token
+          # reaches jq via env (not argv), so it isn't on the command
+          # line; it's then unset before `docker build` so the build
+          # process doesn't inherit it. Either way the multi-stage
+          # Containerfile keeps it out of the runtime image.
+          COMPOSER_AUTH_FILE=$(mktemp)
+          trap 'rm -f "$COMPOSER_AUTH_FILE"' EXIT
+          if [ -n "$COMPOSER_AUTH_TOKEN" ]; then
+            jq -nc '{"github-oauth":{"github.com":env.COMPOSER_AUTH_TOKEN}}' > "$COMPOSER_AUTH_FILE"
+          fi
+          unset COMPOSER_AUTH_TOKEN
+          # A single build tagged for both registries, rather than two builds:
+          # two would produce two digests for the same source, and every
+          # signature and SBOM below is bound to a digest.
+          TAGS="-t $ACR_LOGIN_SERVER/$IMAGE_NAME:$VERSION"
+          if [ "$GHCR" = "true" ]; then
+            TAGS="$TAGS -t $GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME:$VERSION"
+          fi
+          # shellcheck disable=SC2086 # TAGS is a deliberately split flag list
+          DOCKER_BUILDKIT=1 docker build -f Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --secret id=composer_auth,src="$COMPOSER_AUTH_FILE" \
+            $TAGS .
+
+      - name: Push image
+        id: push
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          GHCR: ${{ inputs.ghcr }}
+        run: |
+          IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:$VERSION"
+          docker push "$IMAGE"
+          # Read the digest from the ACR push specifically. `RepoDigests[0]` is
+          # whichever registry answered first once the image carries two tags,
+          # so indexing blind would make the digest every downstream step signs
+          # depend on push order.
+          DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" \
+            | grep "^$ACR_LOGIN_SERVER/$IMAGE_NAME@" | head -1 | cut -d@ -f2)
+          if [ -z "$DIGEST" ]; then
+            echo "::error::Could not resolve the pushed digest for $IMAGE" >&2
+            exit 1
+          fi
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          if [ "$GHCR" = "true" ]; then
+            GHCR_IMAGE="$GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME:$VERSION"
+            docker push "$GHCR_IMAGE"
+            echo "GHCR_IMAGE=$GHCR_IMAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+      # see: https://github.com/anchore/sbom-action/releases/tag/v0.24.0
+      - name: Generate SBOM
+        if: inputs.sbom
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          image: ${{ steps.push.outputs.IMAGE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      # see: https://github.com/anchore/scan-action/releases/tag/v7.4.0
+      - name: Scan SBOM for vulnerabilities
+        if: inputs.sbom
+        uses: anchore/scan-action@v7.4.0
+        with:
+          sbom: sbom.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+
+      # GitHub's attestation API is plan-gated for private org repos, so
+      # these fail with "Feature not available for the <org> organization"
+      # unless `github-attestations` is switched on. They stay off by
+      # default: with `continue-on-error` they reported step conclusion
+      # `success` while failing, so every run looked green and the error
+      # annotations were the only evidence — which is exactly how a broken
+      # supply-chain step hides. The SBOM is attested via Cosign below
+      # instead, which has no plan dependency.
+      # see: https://github.com/actions/attest/releases/tag/v4.2.2
+      - name: Attest SBOM (GitHub)
+        if: inputs.sbom && inputs['github-attestations']
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ env.ACR_LOGIN_SERVER }}/${{ inputs.image-name }}
+          subject-digest: ${{ steps.push.outputs.DIGEST }}
+          predicate-type: https://spdx.dev/Document/v2.3
+          predicate-path: sbom.spdx.json
+          push-to-registry: true
+
+      # see: https://github.com/actions/attest-build-provenance/releases/tag/v4.2.2
+      - name: Attest build provenance (GitHub)
+        if: inputs.github-attestations
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: ${{ env.ACR_LOGIN_SERVER }}/${{ inputs.image-name }}
+          subject-digest: ${{ steps.push.outputs.DIGEST }}
+          push-to-registry: true
+
+      # Cosign keyless signing works on any plan — it writes a Sigstore
+      # bundle to the registry as an OCI 1.1 referrer, not to GitHub. These
+      # steps deliberately do NOT set `continue-on-error`: a signature or
+      # attestation that silently fails to publish is worse than a red
+      # build, because downstream verification then trusts an image that
+      # was never actually signed.
+      # see: https://github.com/sigstore/cosign-installer/releases/tag/v4.1.2
+      - name: Install Cosign
+        if: inputs.cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      # Signed per registry, not once. A Cosign signature is an OCI referrer
+      # stored beside the image in the registry it was pushed to, so signing ACR
+      # leaves the GHCR copy unsigned — and an unsigned copy is the one people
+      # can pull without an Azure account. Same digest, so both signatures cover
+      # identical bytes.
+      - name: Sign image
+        if: inputs.cosign
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.push.outputs.DIGEST }}
+          GHCR: ${{ inputs.ghcr }}
+        run: |
+          cosign sign --yes "$ACR_LOGIN_SERVER/$IMAGE_NAME@$DIGEST"
+          if [ "$GHCR" = "true" ]; then
+            cosign sign --yes "$GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME@$DIGEST"
+          fi
+
+      # Attaches the SPDX SBOM to the image digest as a second referrer, so
+      # `cosign verify-attestation --type spdxjson` can recover it from the
+      # registry. Requires both flags: the SBOM must exist and Cosign must
+      # be installed.
+      - name: Attest SBOM (Cosign)
+        if: inputs.sbom && inputs.cosign
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          DIGEST: ${{ steps.push.outputs.DIGEST }}
+          GHCR: ${{ inputs.ghcr }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "$ACR_LOGIN_SERVER/$IMAGE_NAME@$DIGEST"
+          # Same reasoning as the signature: the attestation is a referrer in
+          # one registry, so the GHCR copy needs its own.
+          if [ "$GHCR" = "true" ]; then
+            cosign attest --yes \
+              --predicate sbom.spdx.json \
+              --type spdxjson \
+              "$GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME@$DIGEST"
+          fi
