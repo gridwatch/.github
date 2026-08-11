@@ -1,0 +1,142 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+# Reusable workflow that turns a CAPSTONE export push into a reviewable
+# pull request against gridwatch/registries.
+#
+# Triggered by the caller on push to `craft-export`: normalize the pushed
+# JSON to stable formatting, reconcile the tree against the export
+# manifest, then open or update a PR against main.
+#
+# Validation is deliberately NOT here. registries/.github/workflows/
+# fdt-validate.yml already runs `12b validate` on every pull request, so
+# opening one is what gates the content. Duplicating it would mean two
+# places to update whenever the validator moves.
+
+name: Registries Export
+
+on:
+  workflow_call:
+    secrets:
+      EXPORT_APP_ID:
+        description: 'App ID of the CAPSTONE export GitHub App.'
+        required: true
+      EXPORT_APP_PRIVATE_KEY:
+        description: 'Private key of the CAPSTONE export GitHub App.'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: craft-export
+          fetch-depth: 0
+
+      # Mints an installation token scoped to this repository, valid for
+      # about an hour. Needed because the automatic GITHUB_TOKEN cannot
+      # open pull requests: the org sets
+      # can_approve_pull_request_reviews = false, and that flag has no
+      # repository-scoped form. An App keeps the grant at one repository
+      # and leaves no long-lived credential at rest.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ secrets.EXPORT_APP_ID }}
+          private-key: ${{ secrets.EXPORT_APP_PRIVATE_KEY }}
+
+      - name: Normalize exported JSON
+        run: |
+          set -euo pipefail
+          # Hand-authored JSON that CAPSTONE does not generate. Normalizing
+          # these would rewrite files the export does not own.
+          skip_list="./exported-assets-manifest.json"
+          changed=0
+          while IFS= read -r -d '' file; do
+            case " $skip_list " in
+              *" $file "*) continue ;;
+            esac
+            tmp="$(mktemp)"
+            jq --sort-keys . "$file" > "$tmp"
+            if cmp -s "$file" "$tmp"; then
+              rm -f "$tmp"
+            else
+              mv "$tmp" "$file"
+              changed=$((changed + 1))
+            fi
+          done < <(find . -path ./.git -prune -o -name '*.json' -print0)
+          echo "normalized $changed file(s)"
+
+      - name: Reconcile against export manifest
+        run: |
+          set -euo pipefail
+          if [ ! -f .export-manifest.json ]; then
+            echo "no .export-manifest.json yet - reconcile skipped"
+            exit 0
+          fi
+          jq -r '.records[]' .export-manifest.json | sort > /tmp/expected.txt
+          find . -path ./.git -prune -o -name 'details.json' -print \
+            | sed 's|^\./||' | sort > /tmp/actual.txt
+          if ! diff -u /tmp/expected.txt /tmp/actual.txt > /tmp/reconcile.diff; then
+            echo "::error::export manifest and tree disagree"
+            echo "--- expected (manifest) vs +++ actual (tree) ---"
+            cat /tmp/reconcile.diff
+            exit 1
+          fi
+          echo "reconcile clean: $(wc -l < /tmp/expected.txt) record(s)"
+
+      - name: Commit normalization
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "nothing to normalize"
+            exit 0
+          fi
+          git commit -am "chore: normalize exported JSON"
+          git push
+
+      # Uses the App token, not GITHUB_TOKEN: opening a pull request is
+      # exactly what the automatic token is barred from doing here.
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # `gh pr list` exits 0 with empty output when nothing matches, so a
+          # real failure (auth, rate limit, API error) still trips `set -e`
+          # instead of being misread as "no pull request open" the way a
+          # stderr-suppressed `gh pr view` would.
+          existing="$(gh pr list --base main --head craft-export --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "pull request #$existing already open - the push updated it"
+            exit 0
+          fi
+          # Body via heredoc, not an inline --body string: continuation lines
+          # of a quoted string keep this block's indentation as literal text,
+          # and a >=4-space indent renders as a code block on GitHub.
+          gh pr create \
+            --base main \
+            --head craft-export \
+            --title "chore: CAPSTONE export" \
+            --body-file - <<'BODY'
+          Generated by the CAPSTONE Blitz git deployer.
+
+          Do not hand-edit this branch - the next export overwrites it.
+          Reasoning for each change lives in the CAPSTONE entry revision named in the commit.
+          BODY
