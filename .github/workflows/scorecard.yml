@@ -1,0 +1,85 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: OpenSSF Scorecard
+
+on:
+  workflow_call:
+    inputs:
+      publish_results:
+        description: 'Publish results to scorecard.dev (only works for public repos)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SCORECARD_TOKEN:
+        required: false
+
+# Workflow-level permissions must stay a subset of what caller jobs grant —
+# 'read-all' makes every workflow_call fail validation ("requesting X, but is
+# only allowed none"). The analysis job declares its own explicit scopes.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: scorecard
+    runs-on: ubuntu-latest
+
+    permissions:
+      # security-events: write is only needed by the (currently disabled)
+      # SARIF upload step below — re-add it when re-enabling that step.
+      # Mint the signed OIDC token used to publish results.
+      id-token: write
+      contents: read
+      actions: read
+      checks: read
+
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/ossf/scorecard-action/releases/tag/v2.4.4
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Branch-Protection + Webhooks checks on private repos need a PAT
+          # with admin:read. If SCORECARD_TOKEN isn't set these checks will
+          # score 0/10 but the rest of the analysis still runs.
+          repo_token: ${{ secrets.SCORECARD_TOKEN || secrets.GITHUB_TOKEN }}
+          # publish_results only works for public repos (scorecard.dev can't
+          # host private scores). Callers can set the publish_results input
+          # to true for public-facing repos.
+          publish_results: ${{ inputs.publish_results }}
+
+      # yamllint's comments-indentation rule wants a comment indented like the
+      # content it precedes, so this block sits above the artifact step rather
+      # than trailing at end-of-file. Matching the indentation of the step it
+      # describes is the point; deeper would read as commentary on `with:`.
+      #
+      # Disabled: uploading SARIF to code scanning requires GHAS Code Security
+      # on private repos, which isn't licensed right now. Results remain
+      # available via the scorecard-results artifact below. Re-enable when
+      # Code Security is turned on.
+      # see: https://github.com/github/codeql-action/releases/tag/v4.37.6
+      # - name: Upload SARIF to code scanning
+      #   uses: github/codeql-action/upload-sarif@v4.37.6
+      #   with:
+      #     sarif_file: results.sarif
+
+      # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 30
