@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   superlinter:
-    uses: gridwatch/tooling/.github/workflows/superlinter-prose.yml@main
+    uses: gridwatch/.github/.github/workflows/superlinter-prose.yml@main
     with:
       copy-yamllint-config: true
     secrets:
