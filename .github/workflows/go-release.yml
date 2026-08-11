@@ -1,0 +1,183 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Go Release
+
+# Builds the binaries for a tagged commit and publishes them as a GitHub
+# release. Triggered by the caller on a `v*` tag push, so the tag is the
+# release: nothing here decides what to publish, it only reacts.
+
+on:
+  workflow_call:
+    inputs:
+      binary-name:
+        description: 'Output binary name, also the release asset prefix'
+        type: string
+        required: true
+      main-package:
+        description: 'Package path to build (e.g. ./cmd/terp)'
+        type: string
+        required: true
+      version-var:
+        description: >-
+          Fully qualified variable to stamp the tag into, as accepted by
+          `go build -ldflags -X` (e.g.
+          github.com/gridwatch/terp/internal/branding.version). Empty
+          skips stamping, in which case the binary reports itself as an
+          unstamped dev build.
+        type: string
+        default: ''
+      platforms:
+        description: 'Space-separated GOOS/GOARCH pairs to build'
+        type: string
+        default: 'darwin/arm64 darwin/amd64 linux/amd64 linux/arm64'
+      sibling-modules:
+        description: 'Space-separated repo names to clone as sibling directories (go.mod replace targets)'
+        type: string
+        default: ''
+      clone-registries:
+        description: 'Clone the registries repo as a sibling directory'
+        type: boolean
+        default: false
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the release and uploading its assets.
+      contents: write
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          # The version stamp prefers an exact tag on HEAD, and
+          # `git describe` cannot see tags in a shallow clone.
+          fetch-depth: 0
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+          for mod in ${SIBLING_MODULES}; do
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/${mod}.git" "../${mod}"
+          done
+          if [ "${CLONE_REGISTRIES}" = "true" ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/registries.git" ../registries
+          fi
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # go.mod requirements for gridwatch modules resolve straight from GitHub:
+      # GOPRIVATE keeps them away from the public proxy and checksum database,
+      # which cannot see a private repo, and the rewrite gives git the token it
+      # needs to fetch them.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      - name: Build
+        env:
+          BINARY_NAME: ${{ inputs.binary-name }}
+          MAIN_PACKAGE: ${{ inputs.main-package }}
+          PLATFORMS: ${{ inputs.platforms }}
+          VERSION_VAR: ${{ inputs.version-var }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          ldflags=''
+          if [ -n "${VERSION_VAR}" ]; then
+            ldflags="-X ${VERSION_VAR}=${VERSION}"
+          fi
+
+          for platform in ${PLATFORMS}; do
+            goos="${platform%%/*}"
+            goarch="${platform##*/}"
+            out="dist/${BINARY_NAME}_${VERSION}_${goos}_${goarch}"
+
+            echo "building ${goos}/${goarch}"
+            # CGO off so every target cross-compiles from this runner and
+            # the result carries no host libc dependency.
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+              go build -trimpath -ldflags "${ldflags}" -o "${out}" "${MAIN_PACKAGE}"
+          done
+
+          # Checksums are generated from inside dist/ so the file records
+          # bare names, which is what `shasum -c` expects to find beside it.
+          cd dist
+          sha256sum ./* > "${BINARY_NAME}_${VERSION}_SHA256SUMS"
+
+      - name: Verify the stamp
+        env:
+          BINARY_NAME: ${{ inputs.binary-name }}
+          VERSION: ${{ github.ref_name }}
+          VERSION_VAR: ${{ inputs.version-var }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VERSION_VAR}" ]; then
+            echo "no version-var configured; skipping stamp check"
+            exit 0
+          fi
+
+          # A silently unstamped release is the failure this whole input
+          # exists to prevent, so prove it landed before publishing.
+          #
+          # Check every artifact rather than one assumed target: the
+          # caller can override `platforms`, and a check hard-coded to
+          # linux/amd64 would fail a release that never asked for it —
+          # while also saying nothing about the platforms it did build.
+          checked=0
+          for binary in dist/"${BINARY_NAME}"_"${VERSION}"_*; do
+            case "${binary}" in
+              *_SHA256SUMS) continue ;;
+            esac
+            if ! grep -qa -- "${VERSION}" "${binary}"; then
+              echo "::error::${VERSION} is not present in ${binary}; the ldflags stamp did not take"
+              exit 1
+            fi
+            checked=$((checked + 1))
+          done
+
+          if [ "${checked}" -eq 0 ]; then
+            echo "::error::no binaries found to verify; the build produced nothing"
+            exit 1
+          fi
+          echo "stamp verified in ${checked} binaries"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # --verify-tag: refuse to invent a tag if the ref went away
+          # between the push and this job.
+          gh release create "${VERSION}" \
+            --repo "${{ github.repository }}" \
+            --title "${VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
