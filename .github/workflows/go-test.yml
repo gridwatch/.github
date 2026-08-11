@@ -1,0 +1,199 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Go Test
+
+on:
+  workflow_call:
+    inputs:
+      clone-assets:
+        description: 'Clone the assets repo (media prompts) as a sibling directory'
+        type: boolean
+        default: false
+      clone-registries:
+        description: 'Clone the registries repo (server-loaded YAML) as a sibling directory'
+        type: boolean
+        default: false
+      setup-command:
+        description: 'Shell command to run after checkout, before tests (e.g. copy registry data for go:embed)'
+        type: string
+        default: ''
+      sibling-modules:
+        description: 'Space-separated repo names to clone as sibling directories (go.mod replace targets)'
+        type: string
+        default: ''
+      coverage-threshold:
+        description: 'Fail when total statement coverage is below this percent. 0 disables the gate.'
+        type: number
+        default: 0
+      postgres-image:
+        description: 'Image for a Postgres started before the tests. Empty means no database.'
+        type: string
+        default: ''
+      database-url-env:
+        description: 'Variable the connection URL is exported as (e.g. CROSSBAND_TEST_DATABASE_URL).'
+        type: string
+        default: ''
+    secrets:
+      # Optional so this workflow also serves public repositories. A pull
+      # request from a fork receives no secrets at all, so a required secret
+      # would fail the run before a step executed. Every step that needs the
+      # token is guarded on it being non-empty; a caller with private siblings,
+      # assets or registries still has to supply one.
+      REPO_ACCESS_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          CLONE_ASSETS: ${{ inputs.clone-assets }}
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          # Every clone below is of a private repository, so all of it is
+          # skipped without a token. A public caller reaches none of it: it has
+          # no private siblings by definition. Note that a caller-provided
+          # setup-command may still expect these sibling checkouts to exist.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "no REPO_ACCESS_TOKEN; skipping private sibling checkouts"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+          for mod in ${SIBLING_MODULES}; do
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/${mod}.git" "../${mod}"
+          done
+          if [ "${CLONE_ASSETS}" = "true" ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/assets.git" ../assets
+          fi
+          if [ "${CLONE_REGISTRIES}" = "true" ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/registries.git" ../registries
+          fi
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # go.mod requirements for gridwatch modules resolve straight from GitHub:
+      # GOPRIVATE keeps them away from the public proxy and checksum database,
+      # which cannot see a private repo, and the rewrite gives git the token it
+      # needs to fetch them.
+      # Skipped without a token: the rewrite would otherwise install
+      # `x-access-token:@github.com` as the credential for every gridwatch
+      # fetch, turning a would-be anonymous clone of a public module into an
+      # authentication failure.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "no REPO_ACCESS_TOKEN; leaving module resolution on the public proxy"
+            exit 0
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      # The command goes through the environment rather than being interpolated
+      # into the script, so its text cannot be parsed as part of it. The nested
+      # shell needs `-e` restated: the default shell applies it to the outer
+      # script only, so without it a `cmd1; cmd2` setup command would continue
+      # past a failing `cmd1` and report only the last exit status.
+      - name: Run setup command
+        if: inputs.setup-command != ''
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -eo pipefail -c "$SETUP_COMMAND"
+
+      # `docker run` rather than a job-level `services:` block, because
+      # services cannot be made conditional: every Go repo in the fleet would
+      # pay the image pull for a database only one of them uses. A repo that
+      # leaves `postgres-image` empty skips this step entirely.
+      #
+      # The image is an input rather than a constant because the extensions
+      # matter — a repo whose migrations create `vector` or `postgis` needs an
+      # image that ships them, and stock `postgres` fails on the first
+      # migration rather than at startup, where it would be obvious.
+      - name: Start Postgres
+        if: inputs.postgres-image != ''
+        env:
+          POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+        run: |
+          set -euo pipefail
+          docker run -d --name ci-postgres -p 5432:5432 \
+            -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+            "${POSTGRES_IMAGE}"
+          # pg_isready inside the container: it reports the server accepting
+          # connections, which a port check on the host does not.
+          for _ in $(seq 60); do
+            if docker exec ci-postgres pg_isready -U test -q; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::Postgres never became ready"
+          docker logs ci-postgres
+          exit 1
+
+      # The URL is exported under a repo-chosen name rather than a fixed one:
+      # these suites skip when their variable is unset, and a repo that names
+      # it differently would silently skip every database test while still
+      # reporting the package as passing.
+      - name: Run tests
+        env:
+          DATABASE_URL_ENV: ${{ inputs.database-url-env }}
+          POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DATABASE_URL_ENV}" ] && [ -z "${POSTGRES_IMAGE}" ]; then
+            echo "::error::database-url-env is set but postgres-image is empty"
+            exit 1
+          fi
+          if [ -n "${DATABASE_URL_ENV}" ]; then
+            export "${DATABASE_URL_ENV}=postgres://test:test@localhost:5432/test?sslmode=disable"
+          fi
+          go test -race -count=1 -coverprofile=coverage.out ./...
+
+      # Opt-in per repo. A repo that has not set a threshold keeps the
+      # previous behaviour exactly: tests run, coverage is measured but
+      # nothing is enforced.
+      - name: Enforce coverage threshold
+        if: inputs.coverage-threshold > 0
+        env:
+          COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+        run: |
+          # pipefail matters here: the total is read through a
+          # `go tool cover | awk | tr` pipeline, and without it a failure
+          # in the first command is masked by tr succeeding.
+          set -euo pipefail
+
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { print $3 }' | tr -d '%')"
+          if [ -z "${total}" ]; then
+            echo "::error::could not read a coverage total from coverage.out"
+            exit 1
+          fi
+          echo "total statement coverage: ${total}% (threshold ${COVERAGE_THRESHOLD}%)"
+
+          # awk rather than $(( )): shell arithmetic is integer-only, and
+          # bash and dash both *error* on a fractional operand rather than
+          # truncating it, so the comparison could not be written that way
+          # at all. awk compares in floating point.
+          awk -v got="${total}" -v want="${COVERAGE_THRESHOLD}" \
+            'BEGIN { if (got + 0 < want + 0) { exit 1 } }' \
+            || {
+              echo "::error::coverage ${total}% is below the ${COVERAGE_THRESHOLD}% threshold"
+              exit 1
+            }
