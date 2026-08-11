@@ -1,0 +1,143 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+# Reusable workflow that publishes data-feeds CSVs and schema.json files
+# to the CAPSTONE Craft webhook in a single POST.
+#
+# Architecture: Craft receives both schemas and CSVs via one
+# Cloudflare-Access-gated webhook, then stages the CSVs to its private
+# Azure data-feeds container (which Feed Me polls on its own schedule).
+# This sidesteps the "GHA-cannot-reach-private-storage" problem without
+# weakening the storage account's `public_network_access_enabled = false`
+# posture in infrastructure-capstone.
+#
+# Auth: Cloudflare Access service token (CF-Access-Client-Id /
+# CF-Access-Client-Secret headers). Token is provisioned in
+# infrastructure-capstone via cloudflare_zero_trust_access_service_token
+# and a path-scoped access policy on /feeds/*; the client ID + secret are
+# pushed onto the consumer repo as GHA secrets by infrastructure-github.
+#
+# Convention-matching call from the consumer repo (rendered by
+# infrastructure-github into .github/workflows/sync.yml):
+#
+#     jobs:
+#       sync:
+#         uses: gridwatch/tooling/.github/workflows/craftcms-data-feeds-sync.yml@main
+#         with:
+#           webhook-url: https://capstone.frontierdefensetech.com/feeds/sync
+#         secrets:
+#           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+#           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+
+name: CAPSTONE Data Feeds Sync
+
+on:
+  workflow_call:
+    inputs:
+      webhook-url:
+        description: |
+          Full URL of the Craft feeds-sync webhook (e.g.
+          https://capstone.frontierdefensetech.com/feeds/sync). Rendered
+          into the consumer repo by infrastructure-github from a Terraform
+          variable; mirrors local.capstone_hostname from
+          infrastructure-capstone.
+        type: string
+        required: true
+    secrets:
+      CF_ACCESS_CLIENT_ID:
+        description: 'Cloudflare Access service-token client ID for the CAPSTONE feeds-sync webhook.'
+        required: true
+      CF_ACCESS_CLIENT_SECRET:
+        description: 'Cloudflare Access service-token client secret for the CAPSTONE feeds-sync webhook.'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Package feeds
+        # Bundle every *.csv and *.schema.json at the repo root. Craft's
+        # webhook controller extracts the archive, stages CSVs to Azure
+        # Blob (from inside the platform VNet, where the storage account
+        # is reachable), and runs the schema reconciler.
+        #
+        # Explicit `shell: bash` because this script uses `shopt -s
+        # nullglob`, bash arrays, and `[[ ... ]]` — all bash-specific.
+        # ubuntu-latest defaults to bash today, but pinning it here means
+        # the workflow keeps working if the runner default ever changes.
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*.csv *.schema.json)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No *.csv or *.schema.json files found at repo root — nothing to sync."
+            exit 1
+          fi
+          tar -czf feeds.tar.gz "${files[@]}"
+          echo "Packaged ${#files[@]} files into feeds.tar.gz ($(stat -c %s feeds.tar.gz) bytes)."
+
+      - name: POST to Craft webhook
+        env:
+          WEBHOOK_URL: ${{ inputs.webhook-url }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Capture status, response headers, and body separately so any
+          # Q2 dropdown-conflict block (409) or other failure surfaces as
+          # a red workflow annotation on the merge commit with the failing
+          # section name in the response body.
+          #
+          # Response headers are captured too: a non-2xx can come from
+          # Cloudflare (Access denial, WAF / Bot Fight Mode) or from Craft
+          # itself, and the `server` / `cf-ray` / `cf-mitigated` /
+          # `cf-access-aud` headers are what tell the two apart.
+          #
+          # Content-Type is `application/octet-stream` rather than
+          # `application/gzip` or `application/x-tar` — the payload is
+          # both (a tar compressed with gzip), and the Craft webhook
+          # controller knows what to expect from the endpoint contract
+          # (`/feeds/sync` = gzip tarball of CSVs + schemas). The
+          # Content-Type is informational only; opaque-binary is the
+          # honest description.
+          status=$(curl -sS \
+            -o response.txt \
+            -D response-headers.txt \
+            -w '%{http_code}' \
+            -X POST \
+            -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+            -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @feeds.tar.gz \
+            "${WEBHOOK_URL}")
+          echo "HTTP ${status}"
+          # Print an allowlist of diagnostic response headers only — never
+          # the raw dump, which can carry Set-Cookie (Cloudflare clearance
+          # / app session cookies). `tr -d '\r'` strips the CRLF curl
+          # writes so the lines render cleanly in the Actions log.
+          echo "--- response headers (diagnostic subset) ---"
+          tr -d '\r' < response-headers.txt \
+            | grep -iE '^(HTTP/|server:|cf-ray:|cf-mitigated:|cf-access-aud:|cf-cache-status:|content-type:|retry-after:)' \
+            || true
+          echo "--- response body ---"
+          cat response.txt || true
+          echo "---"
+          if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
+            echo "::error::Craft webhook returned HTTP ${status}. See response body above for the failing section / reason."
+            exit 1
+          fi
