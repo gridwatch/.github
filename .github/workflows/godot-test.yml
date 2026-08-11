@@ -1,0 +1,646 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Godot Test
+
+# Builds and tests a Godot C# project: installs the editor, imports the
+# project, runs the xUnit suite, gates on coverage, and exports release
+# artifacts.
+#
+# The editor and the export templates are separate downloads. `--import` and
+# the test suite need only the editor; `--export-release` additionally needs
+# the templates for the target platform, which is why the export jobs install
+# both and the test job installs one.
+#
+# Every download is verified against the SHA-512 published in the release's
+# SHA512-SUMS.txt before it is unpacked. That catches a corrupted download and
+# a single-asset swap; it does not catch a full-release compromise, which would
+# need the SUMS file itself verified against Godot's signing key.
+
+on:
+  workflow_call:
+    inputs:
+      godot-version:
+        description: 'Godot version, without the -stable suffix (e.g. 4.7.1)'
+        type: string
+        required: true
+      dotnet-version:
+        description: '.NET SDK version selector'
+        type: string
+        default: '10.0.x'
+      runners:
+        description: 'JSON array of runner labels for the test matrix'
+        type: string
+        default: '["macos-14", "windows-latest"]'
+      test-project:
+        description: 'Path to the test csproj'
+        type: string
+        required: true
+      runsettings:
+        description: 'Path to the coverlet runsettings file'
+        type: string
+        default: 'coverlet.runsettings'
+      cache-suffix:
+        description: >-
+          Suffix on the Godot download cache key. Bump it whenever the
+          verification logic changes, so every runner re-downloads and
+          re-proves its cached binary at least once.
+        type: string
+        default: 'verified-v1'
+      coverage-floor:
+        description: 'Minimum overall statement coverage, as a percentage. 0 disables the gate.'
+        type: number
+        default: 0
+      coverage-prefixes:
+        description: >-
+          Newline-separated source prefixes the coverage gate counts. Anything
+          outside them is excluded — typically engine-coupled code that the
+          pure-logic suite cannot reach.
+        type: string
+        default: ''
+      coverage-from-runner:
+        description: 'Which matrix leg''s coverage artifact the gate reads'
+        type: string
+        default: ''
+      schema-validate:
+        description: 'Run `12b validate` over the content directories'
+        type: boolean
+        default: false
+      schema-assets-dirs:
+        description: 'Newline-separated directories to validate, each against --schemas'
+        type: string
+        default: ''
+      schema-dir:
+        description: 'Directory holding the schema definitions'
+        type: string
+        default: ''
+      twelve-bravo-ref:
+        description: >-
+          Commit SHA of gridwatch/twelve-bravo to run the validator from.
+          Pinned rather than tracking a branch so a twelve-bravo merge cannot
+          silently change what this gate accepts.
+        type: string
+        default: ''
+      macos-export-preset:
+        description: >-
+          Name of the macOS preset in export_presets.cfg. Empty skips the
+          export job entirely rather than running it to produce nothing.
+        type: string
+        default: ''
+      windows-export-preset:
+        description: 'Name of the Windows preset in export_presets.cfg. Empty skips the job.'
+        type: string
+        default: ''
+      export-output-dir:
+        description: 'Directory the exports are written to'
+        type: string
+        default: 'bin'
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.runners) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    env:
+      # Must match the project's Godot.NET.Sdk version exactly, not just
+      # major.minor. The headless import's mono editor rewrites the csproj's
+      # Godot.NET.Sdk to its own version when they differ, and a locked-mode
+      # restore then fails NU1004 against lock files built for the other one.
+      GODOT_VERSION: ${{ inputs.godot-version }}
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          # The csprojs set RestorePackagesWithLockFile, so the lock files are
+          # committed and the hash is stable across runs.
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - uses: actions/cache@v6.1.0
+        id: godot-cache
+        with:
+          path: godot-bin
+          key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
+
+      - name: Install Godot (macOS)
+        if: runner.os == 'macOS' && steps.godot-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_NAME="Godot_v${GODOT_VERSION}-stable_mono_macos.universal.zip"
+          RELEASE_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p godot-bin
+
+          curl -fL -o godot.zip "${RELEASE_URL}/${ZIP_NAME}"
+          curl -fL -o SHA512-SUMS.txt "${RELEASE_URL}/SHA512-SUMS.txt"
+
+          EXPECTED=$(awk -v n="${ZIP_NAME}" '$2==n {print $1}' SHA512-SUMS.txt)
+          if [ -z "${EXPECTED}" ]; then
+            echo "::error::${ZIP_NAME} is not listed in SHA512-SUMS.txt — the release is incomplete or godot-version is wrong." >&2
+            exit 1
+          fi
+          ACTUAL=$(shasum -a 512 godot.zip | awk '{print $1}')
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "::error::SHA-512 mismatch for ${ZIP_NAME}. Cross-check https://godotengine.org/news/ before bumping godot-version." >&2
+            exit 1
+          fi
+
+          unzip -q godot.zip -d godot-bin/
+          chmod +x "godot-bin/Godot_mono.app/Contents/MacOS/Godot"
+
+      - name: Install Godot (Windows)
+        if: runner.os == 'Windows' && steps.godot-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zipName = "Godot_v$($env:GODOT_VERSION)-stable_mono_win64.zip"
+          $releaseUrl = "https://github.com/godotengine/godot/releases/download/$($env:GODOT_VERSION)-stable"
+          New-Item -ItemType Directory -Force -Path godot-bin | Out-Null
+
+          Invoke-WebRequest -Uri "$releaseUrl/$zipName" -OutFile godot.zip
+          Invoke-WebRequest -Uri "$releaseUrl/SHA512-SUMS.txt" -OutFile SHA512-SUMS.txt
+
+          $line = Get-Content SHA512-SUMS.txt | Where-Object { $_ -match "\s+$([regex]::Escape($zipName))$" }
+          if (-not $line) { throw "$zipName is not listed in SHA512-SUMS.txt — the release is incomplete or godot-version is wrong." }
+          $expected = (($line -split '\s+')[0]).ToLower()
+          $actual = (Get-FileHash -Algorithm SHA512 godot.zip).Hash.ToLower()
+          if ($actual -ne $expected) { throw "SHA-512 mismatch for $zipName. Cross-check https://godotengine.org/news/ before bumping godot-version." }
+
+          Expand-Archive -Force godot.zip -DestinationPath godot-bin
+
+      - name: Resolve the Godot binary (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          GODOT_BIN="$(pwd)/godot-bin/Godot_mono.app/Contents/MacOS/Godot"
+          if [ ! -x "${GODOT_BIN}" ]; then
+            echo "::error::Godot binary not found at ${GODOT_BIN}" >&2
+            exit 1
+          fi
+          echo "GODOT_BIN=${GODOT_BIN}" >> "$GITHUB_ENV"
+
+      - name: Resolve the Godot binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path godot-bin -Filter "Godot_v*_mono_win64*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "Godot .exe not found under godot-bin/" }
+          "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # The first pass populates .godot/imported/* and may exit non-zero if the
+      # metadata is still half-written when Godot quits — a known 4.x headless
+      # quirk. The second pass must succeed.
+      - name: Godot import (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          "$GODOT_BIN" --headless --import || true
+          "$GODOT_BIN" --headless --import
+
+      - name: Godot import (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & $env:GODOT_BIN --headless --import
+          if ($LASTEXITCODE -ne 0) { Write-Host "first pass returned $LASTEXITCODE; retrying" }
+          & $env:GODOT_BIN --headless --import
+          if ($LASTEXITCODE -ne 0) { throw "Godot import failed after retry (exit $LASTEXITCODE)" }
+
+      # Locked mode so a dependency drift fails loudly here rather than
+      # silently regenerating the lock file on CI, which would also defeat the
+      # NuGet cache. Local repro: dotnet restore --locked-mode.
+      - name: Restore
+        run: dotnet restore --locked-mode
+        timeout-minutes: 5
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore -clp:NoSummary
+        timeout-minutes: 5
+
+      - name: Test
+        shell: bash
+        env:
+          TEST_PROJECT: ${{ inputs.test-project }}
+          RUNSETTINGS: ${{ inputs.runsettings }}
+        run: |
+          set -euo pipefail
+          dotnet test "${TEST_PROJECT}" --configuration Release --no-build \
+            --settings "${RUNSETTINGS}" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory artifacts/test-results \
+            --logger "trx;LogFileName=unit-results.trx"
+        timeout-minutes: 10
+
+      # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: coverage-${{ matrix.os }}
+          path: artifacts/test-results/**/coverage.cobertura.xml
+          if-no-files-found: warn
+
+      # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: artifacts/test-results/**/*.trx
+          if-no-files-found: warn
+
+  # The same schemas the project enforces at load, checked here with the tool
+  # its authors run, so a schema-invalid asset cannot merge.
+  schema-validate:
+    if: inputs.schema-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Checked before the checkout, so a missing secret or unset input reports
+      # what is wrong rather than failing opaquely inside actions/checkout.
+      - name: Check the inputs
+        env:
+          REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          SCHEMA_DIR: ${{ inputs.schema-dir }}
+          ASSETS_DIRS: ${{ inputs.schema-assets-dirs }}
+          TWELVE_BRAVO_REF: ${{ inputs.twelve-bravo-ref }}
+          MISSING: ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=''
+          [ -n "${REPO_ACCESS_TOKEN}" ] || missing="${missing} REPO_ACCESS_TOKEN(secret)"
+          [ -n "${SCHEMA_DIR}" ] || missing="${missing} schema-dir"
+          [ -n "${ASSETS_DIRS//[[:space:]]/}" ] || missing="${missing} schema-assets-dirs"
+          [ -n "${TWELVE_BRAVO_REF}" ] || missing="${missing} twelve-bravo-ref"
+          if [ -n "${missing}" ]; then
+            echo "::error::schema-validate is enabled but these are unset:${missing}"
+            exit 1
+          fi
+
+      # persist-credentials: false so the token backing the checkout below is
+      # never written into a .git/config the `go run` step could read back.
+      #
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: gridwatch/twelve-bravo
+          ref: ${{ inputs.twelve-bravo-ref }}
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          path: twelve-bravo
+          persist-credentials: false
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: twelve-bravo/go.mod
+          cache-dependency-path: twelve-bravo/go.sum
+
+      - name: Validate
+        shell: bash
+        working-directory: twelve-bravo
+        env:
+          ASSETS_DIRS: ${{ inputs.schema-assets-dirs }}
+          SCHEMA_DIR: ${{ inputs.schema-dir }}
+        run: |
+          set -euo pipefail
+          echo "${ASSETS_DIRS}" | while IFS= read -r dir; do
+            [ -n "${dir}" ] || continue
+            echo "validating ${dir}"
+            go run ./cmd/12b validate \
+              --assets-dir "$GITHUB_WORKSPACE/${dir}" \
+              --schemas "$GITHUB_WORKSPACE/${SCHEMA_DIR}"
+          done
+
+  coverage-gate:
+    if: inputs.coverage-floor > 0
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # Without this the download asks for an artifact called `coverage-` and
+      # fails on a name nothing produced, which reads as a missing artifact
+      # rather than a missing input.
+      - name: Check the inputs
+        env:
+          FROM_RUNNER: ${{ inputs.coverage-from-runner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${FROM_RUNNER}" ]; then
+            echo "::error::coverage-floor is set but coverage-from-runner is empty; it must name one of the runners in the matrix"
+            exit 1
+          fi
+
+      # see: https://github.com/actions/download-artifact/releases/tag/v8.0.1
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: coverage-${{ inputs.coverage-from-runner }}
+          path: coverage
+
+      - name: Enforce the coverage floor
+        shell: bash
+        env:
+          COVERAGE_FLOOR: ${{ inputs.coverage-floor }}
+          COVERAGE_PREFIXES: ${{ inputs.coverage-prefixes }}
+        run: |
+          set -euo pipefail
+          FILE=$(find coverage -name coverage.cobertura.xml | head -1)
+          if [ -z "$FILE" ]; then
+            echo "::error::no coverage report found in the downloaded artifact" >&2
+            exit 1
+          fi
+          python3 - "$FILE" <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          # stdlib ElementTree rather than defusedxml: it resolves no external
+          # entities, and the only residual risk is entity-expansion DoS on a
+          # report this workflow generated itself, bounded by the job timeout.
+          # Revisit if this ever parses a file from outside the run.
+          root = ET.parse(sys.argv[1]).getroot()
+
+          floor = float(os.environ["COVERAGE_FLOOR"]) / 100
+          prefixes = tuple(
+              p.strip().lower()
+              for p in os.environ.get("COVERAGE_PREFIXES", "").splitlines()
+              if p.strip()
+          )
+          if not prefixes:
+              print("::error::coverage-floor is set but coverage-prefixes is empty")
+              sys.exit(1)
+
+          # Per-prefix buckets, so a failure names the module that slipped
+          # rather than only the aggregate.
+          buckets = {p: [0, 0] for p in prefixes}
+
+          for class_el in root.findall(".//class"):
+              filename = class_el.get("filename", "").replace("\\", "/").lower()
+              prefix = next((p for p in prefixes if filename.startswith(p)), None)
+              if prefix is None:
+                  continue
+              for line_el in class_el.findall("./lines/line"):
+                  buckets[prefix][1] += 1
+                  if int(line_el.get("hits", "0")) > 0:
+                      buckets[prefix][0] += 1
+
+          covered = sum(b[0] for b in buckets.values())
+          valid = sum(b[1] for b in buckets.values())
+          if valid == 0:
+              print("::error::no coverage data matched any of: " + ", ".join(prefixes))
+              sys.exit(1)
+
+          overall = covered / valid
+          print(f"overall: {overall * 100:.2f}% ({covered}/{valid})")
+          for p, (c, v) in sorted(buckets.items()):
+              if v == 0:
+                  print(f"  {p}: no data")
+                  continue
+              rate = c / v
+              marker = "" if rate >= floor else f"  [below {floor * 100:.0f}%]"
+              print(f"  {p}: {rate * 100:.2f}% ({c}/{v}){marker}")
+
+          # The gate is on the overall rate. The per-prefix marker above is
+          # informational: it surfaces drift in the log without blocking a
+          # merge, until every module clears the floor on its own.
+          sys.exit(0 if overall >= floor else 1)
+          PY
+
+  build-macos:
+    if: inputs.macos-export-preset != ''
+    needs: test
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      GODOT_VERSION: ${{ inputs.godot-version }}
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Same key as the test job, so within a run this restores the editor that
+      # job already downloaded rather than fetching it again.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - uses: actions/cache@v6.1.0
+        id: godot-cache
+        with:
+          path: godot-bin
+          key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
+
+      # The editor alone cannot export. The templates are a separate ~1GB
+      # download, cached on their own key for the same reason.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - uses: actions/cache@v6.1.0
+        id: export-templates
+        with:
+          path: ~/Library/Application Support/Godot/export_templates
+          key: godot-templates-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-macos
+
+      - name: Install Godot and the export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fL -o SHA512-SUMS.txt "${RELEASE_URL}/SHA512-SUMS.txt"
+
+          verify() {
+            local name="$1" file="$2"
+            local expected actual
+            expected=$(awk -v n="${name}" '$2==n {print $1}' SHA512-SUMS.txt)
+            if [ -z "${expected}" ]; then
+              echo "::error::${name} is not listed in SHA512-SUMS.txt" >&2
+              exit 1
+            fi
+            actual=$(shasum -a 512 "${file}" | awk '{print $1}')
+            if [ "${actual}" != "${expected}" ]; then
+              echo "::error::SHA-512 mismatch for ${name}" >&2
+              exit 1
+            fi
+          }
+
+          if [ "${{ steps.godot-cache.outputs.cache-hit }}" != "true" ]; then
+            EDITOR_ZIP="Godot_v${GODOT_VERSION}-stable_mono_macos.universal.zip"
+            curl -fL -o godot.zip "${RELEASE_URL}/${EDITOR_ZIP}"
+            verify "${EDITOR_ZIP}" godot.zip
+            mkdir -p godot-bin
+            unzip -q godot.zip -d godot-bin/
+            chmod +x "godot-bin/Godot_mono.app/Contents/MacOS/Godot"
+          fi
+          echo "GODOT_BIN=$(pwd)/godot-bin/Godot_mono.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+
+          if [ "${{ steps.export-templates.outputs.cache-hit }}" != "true" ]; then
+            TPZ="Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
+            curl -fL -o templates.tpz "${RELEASE_URL}/${TPZ}"
+            verify "${TPZ}" templates.tpz
+            # The .tpz is a zip whose payload sits under templates/; Godot wants
+            # that payload directly inside the version directory.
+            unzip -q templates.tpz -d tpz
+            DEST="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable.mono"
+            mkdir -p "${DEST}"
+            mv tpz/templates/* "${DEST}/"
+          fi
+
+      - name: Import
+        shell: bash
+        run: |
+          "$GODOT_BIN" --headless --import || true
+          "$GODOT_BIN" --headless --import
+
+      - name: Export
+        shell: bash
+        env:
+          PRESET: ${{ inputs.macos-export-preset }}
+          OUT_DIR: ${{ inputs.export-output-dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${OUT_DIR}"
+          # --export-release fails if the preset is absent from
+          # export_presets.cfg, which is the intended outcome: a missing preset
+          # should stop the build rather than upload nothing.
+          "$GODOT_BIN" --headless --export-release "${PRESET}" "${OUT_DIR}/${PRESET}.app"
+          ls -la "${OUT_DIR}"
+
+      # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: macos-build
+          path: ${{ inputs.export-output-dir }}
+          if-no-files-found: error
+
+  build-windows:
+    if: inputs.windows-export-preset != ''
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GODOT_VERSION: ${{ inputs.godot-version }}
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      # Same key as the test job, so within a run this restores the editor that
+      # job already downloaded rather than fetching it again.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - uses: actions/cache@v6.1.0
+        id: godot-cache
+        with:
+          path: godot-bin
+          key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - uses: actions/cache@v6.1.0
+        id: export-templates
+        with:
+          path: ${{ runner.temp }}\godot-templates
+          key: godot-templates-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-windows
+
+      - name: Install Godot and the export templates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseUrl = "https://github.com/godotengine/godot/releases/download/$($env:GODOT_VERSION)-stable"
+          Invoke-WebRequest -Uri "$releaseUrl/SHA512-SUMS.txt" -OutFile SHA512-SUMS.txt
+
+          function Confirm-Sha512($name, $file) {
+            $line = Get-Content SHA512-SUMS.txt | Where-Object { $_ -match "\s+$([regex]::Escape($name))$" }
+            if (-not $line) { throw "$name is not listed in SHA512-SUMS.txt" }
+            $expected = (($line -split '\s+')[0]).ToLower()
+            $actual = (Get-FileHash -Algorithm SHA512 $file).Hash.ToLower()
+            if ($actual -ne $expected) { throw "SHA-512 mismatch for $name" }
+          }
+
+          if ("${{ steps.godot-cache.outputs.cache-hit }}" -ne "true") {
+            $editorZip = "Godot_v$($env:GODOT_VERSION)-stable_mono_win64.zip"
+            Invoke-WebRequest -Uri "$releaseUrl/$editorZip" -OutFile godot.zip
+            Confirm-Sha512 $editorZip godot.zip
+            Expand-Archive -Force godot.zip -DestinationPath godot-bin
+          }
+          $exe = Get-ChildItem -Path godot-bin -Filter "Godot_v*_mono_win64*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "Godot .exe not found under godot-bin/" }
+          "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $dest = "$env:APPDATA\Godot\export_templates\$($env:GODOT_VERSION).stable.mono"
+          if ("${{ steps.export-templates.outputs.cache-hit }}" -ne "true") {
+            $tpz = "Godot_v$($env:GODOT_VERSION)-stable_mono_export_templates.tpz"
+            Invoke-WebRequest -Uri "$releaseUrl/$tpz" -OutFile templates.tpz
+            Confirm-Sha512 $tpz templates.tpz
+            Expand-Archive -Force templates.tpz -DestinationPath tpz
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Move-Item -Force "tpz\templates\*" $dest
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\godot-templates" | Out-Null
+            Copy-Item -Recurse -Force "$dest\*" "$env:RUNNER_TEMP\godot-templates"
+          } else {
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            Copy-Item -Recurse -Force "$env:RUNNER_TEMP\godot-templates\*" $dest
+          }
+
+      - name: Import
+        shell: pwsh
+        run: |
+          & $env:GODOT_BIN --headless --import
+          if ($LASTEXITCODE -ne 0) { Write-Host "first pass returned $LASTEXITCODE; retrying" }
+          & $env:GODOT_BIN --headless --import
+          if ($LASTEXITCODE -ne 0) { throw "Godot import failed after retry (exit $LASTEXITCODE)" }
+
+      - name: Export
+        shell: pwsh
+        env:
+          PRESET: ${{ inputs.windows-export-preset }}
+          OUT_DIR: ${{ inputs.export-output-dir }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:OUT_DIR | Out-Null
+          & $env:GODOT_BIN --headless --export-release $env:PRESET "$env:OUT_DIR\$env:PRESET.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Godot export failed (exit $LASTEXITCODE)" }
+          Get-ChildItem $env:OUT_DIR
+
+      # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows-build
+          path: ${{ inputs.export-output-dir }}
+          if-no-files-found: error
