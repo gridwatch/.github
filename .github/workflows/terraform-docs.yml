@@ -1,0 +1,52 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: terraform-docs
+
+on:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.repository }}-terraform-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-docs:
+    name: terraform-docs
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Cache terraform-docs image
+        id: cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: /tmp/terraform-docs-v1.4.1.tar
+          key: terraform-docs-gh-actions-v1.4.1
+
+      - name: Load cached image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/terraform-docs-v1.4.1.tar
+
+      - name: Pull and save image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull quay.io/terraform-docs/gh-actions:1.4.1
+          docker save quay.io/terraform-docs/gh-actions:1.4.1 > /tmp/terraform-docs-v1.4.1.tar
+
+      # see: https://github.com/terraform-docs/gh-actions/releases/tag/v1.4.1
+      - name: Check terraform-docs
+        uses: terraform-docs/gh-actions@v1.4.1
+        with:
+          config-file: .terraform-docs.yml
+          fail-on-diff: true
