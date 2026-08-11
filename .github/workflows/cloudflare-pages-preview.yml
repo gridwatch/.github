@@ -1,0 +1,106 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+# Reusable workflow that builds a Hugo site and publishes it to a Cloudflare
+# Pages *preview* deployment for the pull request's head branch.
+#
+# Split from hugo-deploy.yml deliberately: that one is the production deploy
+# and now runs on push to main only. Cloudflare Pages treats any
+# `--branch` other than the project's production branch as a preview, so both
+# workflows would otherwise race to publish the same PR — two deployments per
+# PR, one of which wins arbitrarily. Keeping them apart means "Deploy" on a PR
+# always means production and "Cloudflare Pages Preview" always means preview.
+#
+# The preview URL is surfaced on the job summary and as the GitHub deployment
+# environment URL, so reviewers get a link without opening the Cloudflare
+# dashboard.
+
+name: Cloudflare Pages Preview
+
+on:
+  workflow_call:
+    inputs:
+      project-name:
+        description: 'Cloudflare Pages project name'
+        type: string
+        required: true
+    secrets:
+      CLOUDFLARE_PAGES_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    environment:
+      name: preview-pr-${{ github.event.pull_request.number }}
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      # see: https://github.com/peaceiris/actions-hugo/releases/tag/v3.2.1
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3.2.1
+        with:
+          hugo-version: '0.164.0'
+          extended: true
+
+      - name: Build
+        run: hugo
+
+      # wrangler-action executes `command` via @actions/exec (direct spawn,
+      # no shell), so the interpolated branch name cannot trigger command
+      # injection; this guard pins a safe charset so that property doesn't
+      # silently depend on the action's internals.
+      - name: Validate preview branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if ! printf '%s' "${BRANCH}" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "Refusing to deploy: unsafe characters in branch name: ${BRANCH}" >&2
+            exit 1
+          fi
+
+      # see: https://github.com/cloudflare/wrangler-action/releases/tag/v4.0.0
+      - name: Deploy preview to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: pages deploy public --project-name="${{ inputs.project-name }}" --branch="${{ github.head_ref }}"
+
+      # Every value below goes through `env:` rather than inline `${{ }}`:
+      # `github.head_ref` is attacker-controlled on a fork PR, and inline
+      # interpolation would splice it into the shell.
+      - name: Summarise
+        env:
+          BRANCH: ${{ github.head_ref }}
+          PROJECT: ${{ inputs.project-name }}
+          URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          {
+            echo "### Cloudflare Pages preview"
+            echo
+            echo "- project: \`${PROJECT}\`"
+            echo "- branch: \`${BRANCH}\`"
+            echo "- url: ${URL:-<none reported>}"
+          } >> "${GITHUB_STEP_SUMMARY}"
