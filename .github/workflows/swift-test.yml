@@ -1,0 +1,42 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Swift Package Test
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Cache Swift toolchain
+        id: cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: swift-6.3-RELEASE-osx.pkg
+          key: swift-6.3-RELEASE-osx
+
+      - name: Download Swift 6.3
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: curl -OL https://download.swift.org/swift-6.3-release/xcode/swift-6.3-RELEASE/swift-6.3-RELEASE-osx.pkg
+
+      - name: Install Swift 6.3
+        run: |
+          sudo installer -pkg swift-6.3-RELEASE-osx.pkg -target /
+          echo "TOOLCHAINS=swift" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: swift test
