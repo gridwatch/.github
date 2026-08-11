@@ -1,0 +1,149 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Terraform Super-Linter
+
+on:
+  workflow_call:
+    secrets:
+      REPO_ACCESS_TOKEN:
+        # Accepted (and currently unused) so callers that still pass it after
+        # the .github/linters/ migration don't startup_failure with
+        # "secret X is not declared on the called workflow". Drop this once
+        # all caller workflows stop passing the secret.
+        required: false
+
+concurrency:
+  group: ${{ github.repository }}-superlinter-${{ github.ref }}
+  cancel-in-progress: true
+
+# Write scopes so Super-Linter can post commit statuses and the PR summary
+# comment. The comment posts to POST /issues/{n}/comments (Issues API even for
+# a PR), governed by issues:write, not pull-requests:write. Callers grant the
+# same scopes; whichever is narrower wins, so both must include them.
+permissions:
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  superlinter:
+    name: Super-Linter
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Super-Linter reads its per-language configs from `.github/linters/`.
+      # They are written here rather than committed to each consuming repo, so
+      # a repo cannot be missing one. `MARKDOWN_CONFIG_FILE` and
+      # `YAML_CONFIG_FILE` below are still required — v8 does not reliably
+      # auto-discover these, and without them the files are written and ignored.
+      - name: Write linter configs
+        run: |
+          mkdir -p .github/linters
+          cat > .github/linters/.markdownlint.yml <<'GRIDWATCH_EOF'
+          ---
+
+          default: true
+
+          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md013.md
+          MD013:
+            code_blocks: true
+            line_length: 320
+            tables: false
+
+          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md033.md
+          # terraform-docs renders complex types in markdown tables using <br/> for line
+          # breaks and <pre> for preformatted blocks. Both are well-supported in GitHub-
+          # flavored markdown table cells; the alternative formatter loses readability.
+          MD033:
+            allowed_elements:
+              - br
+              - pre
+
+          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md
+          # Disabled: terraform-docs generates compact tables without spaces around pipes.
+          MD060: false
+          GRIDWATCH_EOF
+          cat > .github/linters/.yamllint.yml <<'GRIDWATCH_EOF'
+          ---
+
+          extends: default
+
+          # .tftpl.yml are Terraform templates with %{...} and {{...}} interpolations
+          # that are not valid YAML until rendered — yamllint can't reason about them.
+          # .terraform/modules/ holds downloaded module sources, not first-party code.
+          ignore: |
+            *.tftpl.yml
+            **/*.tftpl.yml
+            .terraform/
+            **/.terraform/
+
+          # Registry data (themes, schemas, terrain profiles) column-aligns values for
+          # readability. The `braces` and `colons` defaults cap whitespace padding, so
+          # their max-space limits are relaxed here — every substantive rule stays on.
+          rules:
+            braces:
+              max-spaces-inside: -1
+            colons:
+              max-spaces-after: -1
+            document-start:
+              present: true
+            indentation:
+              spaces: 2
+            line-length:
+              max: 320
+            trailing-spaces: enable
+            truthy:
+              check-keys: false
+          GRIDWATCH_EOF
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Cache Super-Linter image
+        id: cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: /tmp/super-linter-slim-v8.7.0.tar
+          key: super-linter-slim-v8.7.0
+
+      - name: Load cached image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/super-linter-slim-v8.7.0.tar
+
+      - name: Pull and save image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/super-linter/super-linter:slim-v8.7.0
+          docker save ghcr.io/super-linter/super-linter:slim-v8.7.0 > /tmp/super-linter-slim-v8.7.0.tar
+
+      # see: https://github.com/super-linter/super-linter/releases/tag/v8.7.0
+      - uses: super-linter/super-linter/slim@v8.7.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: main
+          VALIDATE_ALL_CODEBASE: true
+
+          VALIDATE_BASH: true
+          VALIDATE_JSON: true
+          VALIDATE_MARKDOWN: true
+          VALIDATE_TERRAFORM_FMT: true
+          VALIDATE_TERRAFORM_TFLINT: true
+          VALIDATE_YAML: true
+
+          # Super-Linter v8 auto-discovery doesn't reliably pick up
+          # .github/linters/.yamllint.yml — point at it explicitly so the
+          # repo's `*.tftpl.yml` exclude (Terraform interpolations) is honored.
+          MARKDOWN_CONFIG_FILE: .markdownlint.yml
+          YAML_CONFIG_FILE: .yamllint.yml
+
+          FILTER_REGEX_EXCLUDE: \.terraform/
