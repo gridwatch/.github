@@ -1,0 +1,121 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Prose Super-Linter
+
+on:
+  workflow_call:
+    inputs:
+      # Both are accepted and IGNORED. Markdown, YAML and Bash are linted in
+      # every caller, unconditionally.
+      #
+      # They never did anything. The caller template emits an input only when it
+      # is true, so a `false` in local.superlinter_prose_repos was never passed
+      # and the `true` default applied regardless: `assets` declared
+      # validate_yaml = false and had its YAML linted for as long as the setting
+      # existed, as did `database-schemas` and `sector-website`.
+      #
+      # Nor can they be made to work. Super-Linter rejects any run that mixes
+      # VALIDATE=true and VALIDATE=false, fatally, at config validation and
+      # before a file is read, so honouring a `false` here would disable every
+      # linter in that repo. That is exactly what #127's validate-json did to all
+      # eight prose callers, and why #131 removed it rather than defaulting it.
+      #
+      # Kept declared, not deleted, so a caller that still passes one mid-apply
+      # does not startup_failure. Drop them once no caller does.
+      validate-yaml:
+        description: 'Ignored - YAML is always validated'
+        type: boolean
+        default: true
+      validate-bash:
+        description: 'Ignored - Bash is always validated'
+        type: boolean
+        default: true
+      filter-regex-exclude:
+        description: 'Regex to exclude files from linting'
+        type: string
+        default: '(Taskfile\.yml|tooling/)'
+      copy-yamllint-config:
+        description: 'Copy yamllint.yml from tooling into workspace'
+        type: boolean
+        default: false
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  superlinter:
+    name: superlinter
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: gridwatch/tooling
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          path: tooling
+
+      - name: Copy linter configs into workspace
+        env:
+          COPY_YAMLLINT_CONFIG: ${{ inputs.copy-yamllint-config }}
+        run: |
+          mkdir -p .github/linters
+          cp tooling/markdownlint.yml .github/linters/.markdownlint.yml
+          if [ "${COPY_YAMLLINT_CONFIG}" = "true" ]; then
+            cp tooling/yamllint.yml .github/linters/.yamllint.yml
+          fi
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Cache Super-Linter image
+        id: cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: /tmp/super-linter-slim-v8.7.0.tar
+          key: super-linter-slim-v8.7.0
+
+      - name: Load cached image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/super-linter-slim-v8.7.0.tar
+
+      - name: Pull and save image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/super-linter/super-linter:slim-v8.7.0
+          docker save ghcr.io/super-linter/super-linter:slim-v8.7.0 > /tmp/super-linter-slim-v8.7.0.tar
+
+      # see: https://github.com/super-linter/super-linter/releases/tag/v8.7.0
+      - uses: super-linter/super-linter/slim@v8.7.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: main
+          VALIDATE_MARKDOWN: true
+          VALIDATE_YAML: true
+          VALIDATE_BASH: true
+          VALIDATE_BASH_EXEC: true
+
+          # Super-Linter v8 auto-discovery doesn't pick up the files the copy
+          # step above writes into .github/linters/ — without these the configs
+          # are written and then ignored, and the run silently falls back to
+          # Super-Linter's bundled defaults. The terraform-superlinter reusable
+          # already sets both for the same reason.
+          #
+          # YAML_CONFIG_FILE falls back to Super-Linter's own default filename
+          # when the repo opted out of copy-yamllint-config, so pointing at it
+          # unconditionally can't reference a file that was never written.
+          MARKDOWN_CONFIG_FILE: .markdownlint.yml
+          YAML_CONFIG_FILE: ${{ inputs.copy-yamllint-config && '.yamllint.yml' || '.yaml-lint.yml' }}
+
+          FILTER_REGEX_EXCLUDE: ${{ inputs.filter-regex-exclude }}
