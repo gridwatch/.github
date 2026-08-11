@@ -1,0 +1,170 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Swift App Test
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: 'Xcode project file'
+        type: string
+        required: true
+      scheme:
+        description: 'Xcode scheme to test'
+        type: string
+        required: true
+      simulator:
+        description: 'Simulator name'
+        type: string
+        required: true
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    # A cap so a wedged step can never burn the full 6h default. Kept above the
+    # step caps so the cache post-step still fits. The step caps, not this one,
+    # are what make a stall fail fast.
+    timeout-minutes: 60
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+
+      - name: Install XcodeGen
+        env:
+          XCODEGEN_VERSION: "2.46.0"
+          XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+        run: |
+          install_dir="$(mktemp -d)"
+          zip="${install_dir}/xcodegen.zip"
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${zip}"
+          echo "${XCODEGEN_SHA256}  ${zip}" | shasum -a 256 -c -
+          unzip -q "${zip}" -d "${install_dir}"
+          echo "${install_dir}/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # xcodegen writes a fresh .xcodeproj and .xcodeproj is gitignored, so the
+      # resolved-versions file inside it does not survive generation. Without
+      # seeding the committed lockfile back in, every CI run re-resolves the
+      # version ranges in project.yml and a new upstream release can change what
+      # is built with no commit in this repo. Mirrors the `generate` task in
+      # tooling/taskfiles/swift.yml so local and CI resolve identically.
+      # No-op for apps that have not committed a lockfile.
+      - name: Seed committed package pins
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          if [ -f Package.resolved ]; then
+            dir="${PROJECT}/project.xcworkspace/xcshareddata/swiftpm"
+            mkdir -p "${dir}"
+            cp Package.resolved "${dir}/Package.resolved"
+            echo "seeded pins:"
+            # `|| true` because this is logging. The runner default shell is
+            # `bash -e {0}` with no pipefail, so a grep miss would currently
+            # surface as sed's exit status and pass anyway — but that is an
+            # accident of the default. Should a `defaults.run.shell: bash` ever
+            # be set (which adds pipefail), an unmatched grep would fail package
+            # resolution over a cosmetic summary.
+            grep -E '"(identity|version)"' Package.resolved | paste - - | sed 's/^/  /' || true
+          else
+            echo "no committed Package.resolved — resolving from project.yml ranges"
+          fi
+
+      # Keyed on both inputs that determine what gets resolved: project.yml
+      # (which packages, and the permitted ranges) and Package.resolved (the
+      # exact versions inside those ranges). Keying on project.yml alone would
+      # serve a stale cache after a pin bump. Keyed per-repo so apps with
+      # different dependency sets don't share.
+      #
+      # Restore/save split rather than the combined action so the save condition
+      # is explicit. It must stay success-only: a cache written by a killed
+      # resolve contains repositories/ and checkouts/ but no artifacts/, and
+      # restoring that just reproduces the stall with nothing left to print,
+      # which is what made the stall look cache-independent for so long.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore cached Swift packages
+        id: spm-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .spm-cache
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('project.yml', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ github.repository }}-
+
+      # Resolution is its own step so a stall is attributable and bounded,
+      # rather than silently hanging inside the test step.
+      #
+      # `-packageAuthorizationProvider netrc` is load-bearing, not tidying.
+      # Before an HTTP binary-artifact download SwiftPM asks its credential
+      # store for the host; the default store includes the macOS Keychain, and
+      # on a headless runner securityd has no session to unlock the login
+      # keychain, so SecItemCopyMatching blocks on mach_msg and never returns.
+      # Sampling a stalled xcodebuild showed 100% of samples parked in
+      # BinaryArtifactsManager.download -> KeychainAuthorizationProvider ->
+      # SecItemCopyMatching -> mach_msg2_trap. Selecting netrc drops the
+      # keychain provider. Only apps with a binaryTarget can hit this (git
+      # fetches use git's own credential path), which is why gridwatch stalled
+      # while ghost-grid and QRF stayed green on this very same file.
+      #
+      # GIT_TERMINAL_PROMPT=0 makes git fail rather than block on a credential
+      # prompt when there is no TTY — the same class of bug, different codepath.
+      #
+      # 10m cap: a cold resolve, artifact download included, is about a minute.
+      - name: Resolve Swift packages
+        timeout-minutes: 10
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          xcodebuild -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -clonedSourcePackagesDirPath .spm-cache \
+            -packageAuthorizationProvider netrc \
+            -resolvePackageDependencies
+
+      - name: Run tests
+        timeout-minutes: 30
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          SIMULATOR: ${{ inputs.simulator }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          xcodebuild -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -destination "platform=iOS Simulator,name=${SIMULATOR}" \
+            -clonedSourcePackagesDirPath .spm-cache \
+            -packageAuthorizationProvider netrc \
+            test
+
+      # Success-only (the default when no `always()`), so a half-written package
+      # directory from a failed run is never published. Skipped on an exact key
+      # hit, which would be a no-op.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Swift package cache
+        if: steps.spm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: .spm-cache
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('project.yml', 'Package.resolved') }}
