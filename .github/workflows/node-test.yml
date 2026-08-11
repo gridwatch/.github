@@ -1,0 +1,74 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Node.js Test
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version'
+        type: number
+        default: 22
+      coverage:
+        description: 'Run tests with coverage and post summary'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.repository }}-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/setup-node/releases/tag/v7.0.0
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --coverage --coverage.reporter=text --coverage.reporter=json-summary
+        if: inputs.coverage
+
+      - run: npm test
+        if: ${{ !inputs.coverage }}
+
+      - name: Coverage summary
+        if: inputs.coverage && always()
+        run: |
+          if [ ! -f ./coverage/coverage-summary.json ]; then
+            echo "## Test Coverage" >> "$GITHUB_STEP_SUMMARY"
+            echo "Coverage report not available." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node -e "
+            const r = require('./coverage/coverage-summary.json').total;
+            const fmt = (m) => r[m].pct + '%';
+            const lines = [
+              '## Test Coverage',
+              '',
+              '| Metric | Coverage |',
+              '|--------|----------|',
+              '| Statements | ' + fmt('statements') + ' |',
+              '| Branches | ' + fmt('branches') + ' |',
+              '| Functions | ' + fmt('functions') + ' |',
+              '| Lines | ' + fmt('lines') + ' |',
+            ];
+            require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'));
+          "
