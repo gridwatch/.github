@@ -1,0 +1,43 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Checkov
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  checkov:
+    name: checkov
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/bridgecrewio/checkov-action/releases/tag/v12.3115.0
+      - uses: bridgecrewio/checkov-action@v12.3115.0
+        with:
+          config_file: .checkov.yml
+          directory: .
+          framework: terraform
+          output_format: sarif
+          output_file_path: results.sarif
+          quiet: true
+          soft_fail: true
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.37.6
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4.37.6
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
