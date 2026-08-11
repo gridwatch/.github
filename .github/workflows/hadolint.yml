@@ -1,0 +1,45 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: hadolint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Cache Hadolint image
+        id: cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: /tmp/hadolint-v2.14.0-debian.tar
+          key: hadolint-v2.14.0-debian
+
+      - name: Load cached image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/hadolint-v2.14.0-debian.tar
+
+      - name: Pull and save image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/hadolint/hadolint:v2.14.0-debian
+          docker save ghcr.io/hadolint/hadolint:v2.14.0-debian > /tmp/hadolint-v2.14.0-debian.tar
+
+      # see: https://github.com/hadolint/hadolint-action/releases/tag/v3.4.0
+      - uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Containerfile
