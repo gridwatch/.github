@@ -1,0 +1,123 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: golangci-lint
+
+on:
+  workflow_call:
+    inputs:
+      clone-registries:
+        description: 'Clone the registries repo (server-loaded YAML) as a sibling directory'
+        type: boolean
+        default: false
+      setup-command:
+        description: 'Shell command to run after checkout, before linting (e.g. copy registry data for go:embed)'
+        type: string
+        default: ''
+      sibling-modules:
+        description: 'Space-separated repo names to clone as sibling directories (go.mod replace targets)'
+        type: string
+        default: ''
+      working-directory:
+        description: >-
+          Directory holding go.mod, when the module is not at the repository
+          root (e.g. `tools`). The tooling checkout stays beside the repository
+          either way, so the config path below is anchored to the workspace
+          rather than walked back relatively.
+        type: string
+        default: '.'
+    secrets:
+      # Optional so this workflow also serves public repositories. A pull
+      # request from a fork receives no secrets at all, so a required secret
+      # would fail the run before a step executed. The lint config comes from
+      # the public `.github` repository precisely so linting never depends on
+      # one; only private sibling checkouts do.
+      REPO_ACCESS_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # The shared golangci config lives in the public `.github` repository, so
+      # this clone needs no credentials and works identically for a public
+      # caller and for a fork's pull request. It is the only checkout the lint
+      # job cannot do without.
+      - name: Checkout lint config
+        run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          # All private; skipped without a token. A public caller has no
+          # private siblings, and its config already came from the clone above.
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "no REPO_ACCESS_TOKEN; skipping private sibling checkouts"
+            exit 0
+          fi
+          for mod in ${SIBLING_MODULES}; do
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/${mod}.git" "../${mod}"
+          done
+          if [ "${CLONE_REGISTRIES}" = "true" ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/registries.git" ../registries
+          fi
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: ${{ inputs.working-directory }}/go.mod
+
+      # go.mod requirements for gridwatch modules resolve straight from GitHub:
+      # GOPRIVATE keeps them away from the public proxy and checksum database,
+      # which cannot see a private repo, and the rewrite gives git the token it
+      # needs to fetch them.
+      # Skipped without a token: the rewrite would otherwise install
+      # `x-access-token:@github.com` as the credential for every gridwatch
+      # fetch, turning a would-be anonymous clone of a public module into an
+      # authentication failure.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "no REPO_ACCESS_TOKEN; leaving module resolution on the public proxy"
+            exit 0
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      # The command goes through the environment rather than being interpolated
+      # into the script, so its text cannot be parsed as part of it. The nested
+      # shell needs `-e` restated: the default shell applies it to the outer
+      # script only, so without it a `cmd1; cmd2` setup command would continue
+      # past a failing `cmd1` and report only the last exit status.
+      - name: Run setup command
+        if: inputs.setup-command != ''
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -eo pipefail -c "$SETUP_COMMAND"
+
+      # `../fleet-config` is relative to the checkout root, so a relative
+      # --config breaks as soon as the linter runs anywhere else. Anchoring to
+      # github.workspace resolves to the same file from any working directory.
+      #
+      # see: https://github.com/golangci/golangci-lint-action/releases/tag/v9.3.0
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ./...
+          working-directory: ${{ inputs.working-directory }}
