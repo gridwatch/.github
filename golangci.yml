@@ -1,0 +1,59 @@
+---
+
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - forcetypeassert
+    - godot
+    - gosec
+    - govet
+    - ineffassign
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - predeclared
+    - staticcheck
+    - testifylint
+    - unconvert
+    - unparam
+    - unused
+    - usetesting
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters: [godot]
+        path: ".*"
+        text: "Comment should end in a period"
+        source: "// @"
+  settings:
+    godot:
+      check-all: false
+    govet:
+      enable:
+        - shadow
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
