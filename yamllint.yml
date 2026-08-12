@@ -1,0 +1,30 @@
+---
+
+extends: default
+
+# .tftpl.yml are Terraform templates with %{...} and {{...}} interpolations
+# that are not valid YAML until rendered — yamllint can't reason about them.
+# .terraform/modules/ holds downloaded module sources, not first-party code.
+ignore: |
+  *.tftpl.yml
+  **/*.tftpl.yml
+  .terraform/
+  **/.terraform/
+
+# Registry data (themes, schemas, terrain profiles) column-aligns values for
+# readability. The `braces` and `colons` defaults cap whitespace padding, so
+# their max-space limits are relaxed here — every substantive rule stays on.
+rules:
+  braces:
+    max-spaces-inside: -1
+  colons:
+    max-spaces-after: -1
+  document-start:
+    present: true
+  indentation:
+    spaces: 2
+  line-length:
+    max: 320
+  trailing-spaces: enable
+  truthy:
+    check-keys: false
