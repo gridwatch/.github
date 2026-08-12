@@ -38,75 +38,28 @@ jobs:
     name: Super-Linter
     runs-on: ubuntu-latest
     steps:
+      # The caller and the shared configs are checked out as siblings under the
+      # workspace, and `DEFAULT_WORKSPACE` below scopes linting to the caller.
+      # That is what keeps Super-Linter from linting the config repository it
+      # just fetched, without a `FILTER_REGEX_EXCLUDE` entry to maintain.
+      #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          path: main
 
-      # Super-Linter reads its per-language configs from `.github/linters/`.
-      # They are written here rather than committed to each consuming repo, so
-      # a repo cannot be missing one. `MARKDOWN_CONFIG_FILE` and
-      # `YAML_CONFIG_FILE` below are still required — v8 does not reliably
-      # auto-discover these, and without them the files are written and ignored.
-      - name: Write linter configs
-        run: |
-          mkdir -p .github/linters
-          cat > .github/linters/.markdownlint.yml <<'GRIDWATCH_EOF'
-          ---
-
-          default: true
-
-          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md013.md
-          MD013:
-            code_blocks: true
-            line_length: 320
-            tables: false
-
-          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md033.md
-          # terraform-docs renders complex types in markdown tables using <br/> for line
-          # breaks and <pre> for preformatted blocks. Both are well-supported in GitHub-
-          # flavored markdown table cells; the alternative formatter loses readability.
-          MD033:
-            allowed_elements:
-              - br
-              - pre
-
-          # see https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md
-          # Disabled: terraform-docs generates compact tables without spaces around pipes.
-          MD060: false
-          GRIDWATCH_EOF
-          cat > .github/linters/.yamllint.yml <<'GRIDWATCH_EOF'
-          ---
-
-          extends: default
-
-          # .tftpl.yml are Terraform templates with %{...} and {{...}} interpolations
-          # that are not valid YAML until rendered — yamllint can't reason about them.
-          # .terraform/modules/ holds downloaded module sources, not first-party code.
-          ignore: |
-            *.tftpl.yml
-            **/*.tftpl.yml
-            .terraform/
-            **/.terraform/
-
-          # Registry data (themes, schemas, terrain profiles) column-aligns values for
-          # readability. The `braces` and `colons` defaults cap whitespace padding, so
-          # their max-space limits are relaxed here — every substantive rule stays on.
-          rules:
-            braces:
-              max-spaces-inside: -1
-            colons:
-              max-spaces-after: -1
-            document-start:
-              present: true
-            indentation:
-              spaces: 2
-            line-length:
-              max: 320
-            trailing-spaces: enable
-            truthy:
-              check-keys: false
-          GRIDWATCH_EOF
+      # The configs live in the public `.github` repository, so this needs no
+      # credentials and behaves identically for a private caller, a public one,
+      # and a fork's pull request. A config the workflow fetches for itself
+      # cannot be missing from a freshly scaffolded repo, which is the failure
+      # the per-repo copies existed to prevent.
+      #
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          repository: gridwatch/.github
+          path: fleet-config
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Cache Super-Linter image
@@ -133,6 +86,14 @@ jobs:
           DEFAULT_BRANCH: main
           VALIDATE_ALL_CODEBASE: true
 
+          # Lint the caller only, not the config checkout beside it.
+          #
+          # The literal container path is deliberate. Super-Linter is a Docker
+          # action, and the runner mounts the workspace at `/github/workspace`
+          # inside it, so `github.workspace` — a host path — names a directory
+          # that does not exist in the container.
+          DEFAULT_WORKSPACE: /github/workspace/main
+
           VALIDATE_BASH: true
           VALIDATE_JSON: true
           VALIDATE_MARKDOWN: true
@@ -140,10 +101,14 @@ jobs:
           VALIDATE_TERRAFORM_TFLINT: true
           VALIDATE_YAML: true
 
-          # Super-Linter v8 auto-discovery doesn't reliably pick up
-          # .github/linters/.yamllint.yml — point at it explicitly so the
-          # repo's `*.tftpl.yml` exclude (Terraform interpolations) is honored.
-          MARKDOWN_CONFIG_FILE: .markdownlint.yml
-          YAML_CONFIG_FILE: .yamllint.yml
+          # `LINTER_RULES_PATH` resolves relative to `DEFAULT_WORKSPACE`, so
+          # this reaches the sibling checkout and no copy step is needed. The
+          # two `*_CONFIG_FILE` names are still required — v8 auto-discovery
+          # does not reliably find them, and without these the configs are
+          # fetched and then ignored, silently falling back to the bundled
+          # defaults (an 80-column YAML limit against the fleet's 320).
+          LINTER_RULES_PATH: ../fleet-config
+          MARKDOWN_CONFIG_FILE: markdownlint.yml
+          YAML_CONFIG_FILE: yamllint.yml
 
           FILTER_REGEX_EXCLUDE: \.terraform/
