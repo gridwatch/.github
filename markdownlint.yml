@@ -1,0 +1,22 @@
+---
+
+default: true
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md013.md
+MD013:
+  code_blocks: true
+  line_length: 320
+  tables: false
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md033.md
+# terraform-docs renders complex types in markdown tables using <br/> for line
+# breaks and <pre> for preformatted blocks. Both are well-supported in GitHub-
+# flavored markdown table cells; the alternative formatter loses readability.
+MD033:
+  allowed_elements:
+    - br
+    - pre
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md
+# Disabled: terraform-docs generates compact tables without spaces around pipes.
+MD060: false
