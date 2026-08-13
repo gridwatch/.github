@@ -38,28 +38,38 @@ jobs:
     name: Super-Linter
     runs-on: ubuntu-latest
     steps:
-      # The caller and the shared configs are checked out as siblings under the
-      # workspace, and `DEFAULT_WORKSPACE` below scopes linting to the caller.
-      # That is what keeps Super-Linter from linting the config repository it
-      # just fetched, without a `FILTER_REGEX_EXCLUDE` entry to maintain.
-      #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-          path: main
 
-      # The configs live in the public `.github` repository, so this needs no
-      # credentials and behaves identically for a private caller, a public one,
-      # and a fork's pull request. A config the workflow fetches for itself
-      # cannot be missing from a freshly scaffolded repo, which is the failure
-      # the per-repo copies existed to prevent.
-      #
-      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
-        with:
-          repository: gridwatch/.github
-          path: fleet-config
+      # The shared Super-Linter configs live in the public `.github` repository,
+      # so this clone needs no credentials and behaves identically for a private
+      # caller, a public one, and a fork's pull request.
+      # Cloned outside the workspace, and checked out with git rather than
+      # actions/checkout, for one reason: Super-Linter v8 resolves DEFAULT_BRANCH
+      # with git against its own working directory, which is always the mounted
+      # workspace root — not DEFAULT_WORKSPACE, which only scopes file
+      # discovery. Checking the caller out to a subdirectory therefore leaves the
+      # workspace root without a .git and the run dies with "Neither main, nor
+      # origin/main exist in /github/workspace" before linting anything. So the
+      # caller must stay at the workspace root, which leaves nowhere inside the
+      # workspace to put the configs without linting them, which is why they land
+      # outside it and are copied in.
+      - name: Checkout linter configs
+        run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
+
+      # Super-Linter reads its per-language configs from `.github/linters/`, so
+      # they are copied in rather than read in place. A config fetched by the
+      # workflow cannot be missing from a freshly scaffolded repo, which is the
+      # failure the per-repo copies existed to prevent. `MARKDOWN_CONFIG_FILE`
+      # and `YAML_CONFIG_FILE` below are still required — v8 does not reliably
+      # auto-discover these, and without them the files are copied and ignored.
+      - name: Copy linter configs into workspace
+        run: |
+          mkdir -p .github/linters
+          cp ../fleet-config/markdownlint.yml .github/linters/.markdownlint.yml
+          cp ../fleet-config/yamllint.yml .github/linters/.yamllint.yml
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Cache Super-Linter image
@@ -86,14 +96,6 @@ jobs:
           DEFAULT_BRANCH: main
           VALIDATE_ALL_CODEBASE: true
 
-          # Lint the caller only, not the config checkout beside it.
-          #
-          # The literal container path is deliberate. Super-Linter is a Docker
-          # action, and the runner mounts the workspace at `/github/workspace`
-          # inside it, so `github.workspace` — a host path — names a directory
-          # that does not exist in the container.
-          DEFAULT_WORKSPACE: /github/workspace/main
-
           VALIDATE_BASH: true
           VALIDATE_JSON: true
           VALIDATE_MARKDOWN: true
@@ -101,14 +103,10 @@ jobs:
           VALIDATE_TERRAFORM_TFLINT: true
           VALIDATE_YAML: true
 
-          # `LINTER_RULES_PATH` resolves relative to `DEFAULT_WORKSPACE`, so
-          # this reaches the sibling checkout and no copy step is needed. The
-          # two `*_CONFIG_FILE` names are still required — v8 auto-discovery
-          # does not reliably find them, and without these the configs are
-          # fetched and then ignored, silently falling back to the bundled
-          # defaults (an 80-column YAML limit against the fleet's 320).
-          LINTER_RULES_PATH: ../fleet-config
-          MARKDOWN_CONFIG_FILE: markdownlint.yml
-          YAML_CONFIG_FILE: yamllint.yml
+          # Super-Linter v8 auto-discovery doesn't reliably pick up
+          # .github/linters/.yamllint.yml — point at it explicitly so the
+          # repo's `*.tftpl.yml` exclude (Terraform interpolations) is honored.
+          MARKDOWN_CONFIG_FILE: .markdownlint.yml
+          YAML_CONFIG_FILE: .yamllint.yml
 
           FILTER_REGEX_EXCLUDE: \.terraform/
