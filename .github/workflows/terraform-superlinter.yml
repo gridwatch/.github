@@ -70,6 +70,7 @@ jobs:
           mkdir -p .github/linters
           cp ../fleet-config/markdownlint.yml .github/linters/.markdownlint.yml
           cp ../fleet-config/yamllint.yml .github/linters/.yamllint.yml
+          cp ../fleet-config/tflint.hcl .github/linters/.tflint.hcl
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Cache Super-Linter image
@@ -108,5 +109,12 @@ jobs:
           # repo's `*.tftpl.yml` exclude (Terraform interpolations) is honored.
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
           YAML_CONFIG_FILE: .yamllint.yml
+
+          # Without this, tflint runs against Super-Linter's bundled config,
+          # which enables the aws, azurerm and google rulesets at versions the
+          # image pins rather than the fleet does. Super-Linter runs
+          # `tflint --init` against whichever config it resolves, so the plugin
+          # this one declares is downloaded the same way.
+          TERRAFORM_TFLINT_CONFIG_FILE: .tflint.hcl
 
           FILTER_REGEX_EXCLUDE: \.terraform/
