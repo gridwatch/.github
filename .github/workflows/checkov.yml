@@ -23,6 +23,19 @@ jobs:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
 
+      # The shared config lives in the public `.github` repository, so this
+      # clone needs no credentials and behaves identically for a private
+      # caller, a public one, and a fork's pull request.
+      #
+      # It is cloned outside the workspace so the scan does not walk into it,
+      # then copied in — checkov-action is a Docker action and the runner mounts
+      # only the workspace, so a path outside it is unreadable from inside the
+      # container. The copy runs on the host, before the container starts.
+      - name: Checkout Checkov config
+        run: |
+          git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
+          cp ../fleet-config/checkov.yml .checkov.yml
+
       # see: https://github.com/bridgecrewio/checkov-action/releases/tag/v12.3115.0
       - uses: bridgecrewio/checkov-action@v12.3115.0
         with:
