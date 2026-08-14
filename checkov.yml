@@ -1,0 +1,20 @@
+---
+
+# The shared Checkov configuration for the fleet. Rendered into `.github`, which
+# CI clones without credentials, and into `tooling`, which `task checkov` mounts
+# from a sibling checkout. One template, so they cannot drift.
+#
+# It also still renders per-repo as `.checkov.yml` into every Terraform
+# repository. That copy is unread once the reusable fetches this one, and goes
+# away with the rest of the per-repo linter configs (see #159).
+#
+# `CKV_TF_1` requires module sources be pinned to a commit hash. HCP Terraform's
+# usage control rejects git-based module sources outright, so registry sources
+# with version tags are the only option available and the check cannot be
+# satisfied.
+#
+# A repository needing its own skips cannot append to this: it would have to
+# stop using the shared config instead.
+
+skip-check:
+  - CKV_TF_1
