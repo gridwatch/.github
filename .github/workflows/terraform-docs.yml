@@ -20,8 +20,13 @@ on:
         type: string
         default: '.'
 
+# SHA for pushes, ref for pull requests -- see the long note in
+# `terraform-superlinter.tftpl.yml`. A ref-keyed group lets runs for different
+# commits cancel each other, and GitHub does not create them in commit order, so
+# a burst of pushes can leave a branch tip holding `cancelled` checks. This
+# workflow was the second casualty of exactly that on `terraform-cloudflare-r2`.
 concurrency:
-  group: ${{ github.repository }}-terraform-docs-${{ github.ref }}
+  group: ${{ github.repository }}-terraform-docs-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
