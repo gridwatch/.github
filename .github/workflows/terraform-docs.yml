@@ -10,6 +10,15 @@ name: terraform-docs
 
 on:
   workflow_call:
+    inputs:
+      working-dir:
+        description: >-
+          Comma-separated directories to document. A repository with more than
+          one Terraform root module — `infrastructure-github`, whose workspaces
+          are rooted at different directories — needs every root listed, or
+          drift outside the first one is never checked.
+        type: string
+        default: '.'
 
 concurrency:
   group: ${{ github.repository }}-terraform-docs-${{ github.ref }}
@@ -50,3 +59,7 @@ jobs:
         with:
           config-file: .terraform-docs.yml
           fail-on-diff: true
+          # The action runs from the workspace root and prefers a config that
+          # exists there, so one root `.terraform-docs.yml` serves every entry
+          # and no per-directory copy is needed.
+          working-dir: ${{ inputs.working-dir }}
