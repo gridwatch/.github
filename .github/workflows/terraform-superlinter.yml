@@ -18,8 +18,22 @@ on:
         # all caller workflows stop passing the secret.
         required: false
 
+# Keyed on the SHA for pushes and the ref for pull requests. On a PR, cancelling
+# the previous run when a new commit lands is what we want -- only the tip needs
+# a verdict. On a push it is actively wrong: a ref-keyed group makes runs for
+# DIFFERENT commits cancel each other, and GitHub does not create those runs in
+# commit order. A burst of `github_repository_file` pushes from this repo's own
+# apply is exactly that shape, and it left `terraform-cloudflare-r2` with a red
+# main: the run for tip 6b39ae4 was cancelled by a later-created run for its own
+# PARENT 27d6df6, so the tip kept `cancelled` checks while the parent went
+# green. Checkov and Scorecard, which declare no concurrency at all, both passed
+# on that same commit.
+#
+# Per-SHA groups cost more minutes on a rapid series of pushes, since every
+# commit now runs to completion. That is the intended trade -- a commit status
+# that reflects the commit is worth more than the minutes saved.
 concurrency:
-  group: ${{ github.repository }}-superlinter-${{ github.ref }}
+  group: ${{ github.repository }}-superlinter-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 # Write scopes so Super-Linter can post commit statuses and the PR summary
