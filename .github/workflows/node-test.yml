@@ -20,8 +20,14 @@ on:
         type: boolean
         default: true
 
+# SHA for pushes, ref for pull requests -- see the long note in
+# `terraform-superlinter.tftpl.yml`. Fixed here too rather than only where it
+# was observed: the defect is in the keying, not in any one workflow, and the
+# burst-push shape that triggers it (this repo's own apply pushing several
+# `github_repository_file` commits back-to-back) reaches every repo the fleet
+# manages, Node ones included.
 concurrency:
-  group: ${{ github.repository }}-test-${{ github.ref }}
+  group: ${{ github.repository }}-test-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
