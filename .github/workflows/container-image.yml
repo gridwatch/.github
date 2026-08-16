@@ -86,6 +86,13 @@ on:
       # cannot hold it.
       REPO_ACCESS_TOKEN:
         required: false
+      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
+      # fetching the private gridwatch Go modules. Optional so public and
+      # fork callers still run.
+      REPO_ACCESS_APP_ID:
+        required: false
+      REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
 
 permissions:
   id-token: write
@@ -121,13 +128,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Mints a per-run installation token for the private gridwatch Go
+      # modules — about an hour's life, contents read, scoped to the
+      # repo-access App's installation. Falls back to REPO_ACCESS_TOKEN
+      # below while the fleet still carries it.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ inputs.vendor-go-modules && secrets.REPO_ACCESS_APP_ID != '' }}
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
+          private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       # Vendoring happens on the runner, where the credential legitimately
       # lives; the rewrite is removed straight after, and the build below
       # receives a context that needs no network and no token at all.
       - name: Vendor Go modules
         if: inputs.vendor-go-modules
         env:
-          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
