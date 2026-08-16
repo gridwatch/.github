@@ -73,6 +73,13 @@ on:
       # build cache. Optional; absent callers build unauthenticated.
       COMPOSER_AUTH_TOKEN:
         required: false
+      # Cross-repo GitHub PAT for `go mod download` of private gridwatch
+      # modules inside the build. A build-arg rather than a BuildKit secret
+      # because the same Containerfile must also build under `az acr build`,
+      # which has no secret mounts; the arg is builder-stage only and the
+      # netrc it feeds is removed in the same layer.
+      REPO_ACCESS_TOKEN:
+        required: false
 
 permissions:
   id-token: write
@@ -145,6 +152,7 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
           VERSION: ${{ steps.version.outputs.VERSION }}
           COMPOSER_AUTH_TOKEN: ${{ secrets.COMPOSER_AUTH_TOKEN }}
+          REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
           # Needed here as well as on the push below: an unset GHCR leaves the
           # second `-t` off, and the push then fails on a tag that was never
           # applied rather than on anything to do with the registry.
@@ -164,6 +172,11 @@ jobs:
             jq -nc '{"github-oauth":{"github.com":env.COMPOSER_AUTH_TOKEN}}' > "$COMPOSER_AUTH_FILE"
           fi
           unset COMPOSER_AUTH_TOKEN
+          # Captured then unset for the same reason as the composer token:
+          # the build-arg needs the value, but the docker process should
+          # not inherit it through its environment.
+          GO_MODULES_TOKEN="$REPO_ACCESS_TOKEN"
+          unset REPO_ACCESS_TOKEN
           # A single build tagged for both registries, rather than two builds:
           # two would produce two digests for the same source, and every
           # signature and SBOM below is bound to a digest.
@@ -174,6 +187,7 @@ jobs:
           # shellcheck disable=SC2086 # TAGS is a deliberately split flag list
           DOCKER_BUILDKIT=1 docker build -f Containerfile \
             --build-arg VERSION="$VERSION" \
+            --build-arg GITHUB_TOKEN="$GO_MODULES_TOKEN" \
             --secret id=composer_auth,src="$COMPOSER_AUTH_FILE" \
             $TAGS .
 
