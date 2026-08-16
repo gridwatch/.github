@@ -39,7 +39,7 @@ on:
       filter-regex-exclude:
         description: 'Regex to exclude files from linting'
         type: string
-        default: '(Taskfile\.yml|tooling/)'
+        default: '(Taskfile\.yml|tooling/|_vendor/)'
       copy-yamllint-config:
         description: 'Copy yamllint.yml from tooling into workspace'
         type: boolean
