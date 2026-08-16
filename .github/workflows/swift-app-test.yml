@@ -26,6 +26,12 @@ on:
     secrets:
       REPO_ACCESS_TOKEN:
         required: true
+      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
+      # private repository reads. Optional so callers may lag.
+      REPO_ACCESS_APP_ID:
+        required: false
+      REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -33,6 +39,11 @@ permissions:
 jobs:
   test:
     runs-on: macos-26
+    # A step `if` cannot read the secrets context, so the two App halves are
+    # reduced here — where secrets are legal — to one non-secret boolean the
+    # mint step's condition can test.
+    env:
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     # A cap so a wedged step can never burn the full 6h default. Kept above the
     # step caps so the cache post-step still fits. The step caps, not this one,
     # are what make a stall fail fast.
@@ -41,9 +52,22 @@ jobs:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
 
+      # Mints a per-run installation token for the private repository
+      # reads below — about an hour's life, contents read. Falls back to
+      # REPO_ACCESS_TOKEN while the fleet still carries it.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
+          private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
       - name: Checkout sibling repositories
         env:
-          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
         run: |
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
