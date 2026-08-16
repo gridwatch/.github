@@ -167,14 +167,18 @@ jobs:
           # process doesn't inherit it. Either way the multi-stage
           # Containerfile keeps it out of the runtime image.
           COMPOSER_AUTH_FILE=$(mktemp)
-          trap 'rm -f "$COMPOSER_AUTH_FILE"' EXIT
+          GO_MODULES_TOKEN_FILE=$(mktemp)
+          trap 'rm -f "$COMPOSER_AUTH_FILE" "$GO_MODULES_TOKEN_FILE"' EXIT
           if [ -n "$COMPOSER_AUTH_TOKEN" ]; then
             jq -nc '{"github-oauth":{"github.com":env.COMPOSER_AUTH_TOKEN}}' > "$COMPOSER_AUTH_FILE"
           fi
           unset COMPOSER_AUTH_TOKEN
-          # Captured then unset for the same reason as the composer token:
-          # the build-arg needs the value, but the docker process should
-          # not inherit it through its environment.
+          # The module token is offered both ways: as a BuildKit secret for
+          # Containerfiles that can use `RUN --mount=type=secret` (crossband,
+          # backbrief), and as a build-arg for the one that must also build
+          # under `az acr build`, which has no secret mounts (theater-server).
+          # Captured then unset so the docker process does not inherit it.
+          printf '%s' "$REPO_ACCESS_TOKEN" > "$GO_MODULES_TOKEN_FILE"
           GO_MODULES_TOKEN="$REPO_ACCESS_TOKEN"
           unset REPO_ACCESS_TOKEN
           # A single build tagged for both registries, rather than two builds:
@@ -189,6 +193,7 @@ jobs:
             --build-arg VERSION="$VERSION" \
             --build-arg GITHUB_TOKEN="$GO_MODULES_TOKEN" \
             --secret id=composer_auth,src="$COMPOSER_AUTH_FILE" \
+            --secret id=github_token,src="$GO_MODULES_TOKEN_FILE" \
             $TAGS .
 
       - name: Push image
