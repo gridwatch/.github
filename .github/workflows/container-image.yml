@@ -118,6 +118,10 @@ jobs:
       # interpolated rather than hardcoded so a fork pushes to its own namespace.
       GHCR_LOGIN_SERVER: ghcr.io
       GHCR_OWNER: ${{ github.repository_owner }}
+      # A step `if` cannot read the secrets context, so the two App halves
+      # are reduced here — where secrets are legal — to one non-secret
+      # boolean the mint step's condition can test.
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
@@ -135,7 +139,7 @@ jobs:
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
-        if: ${{ inputs.vendor-go-modules && secrets.REPO_ACCESS_APP_ID != '' }}
+        if: ${{ inputs.vendor-go-modules && env.APP_AUTH_CONFIGURED == 'true' }}
         uses: actions/create-github-app-token@v3.2.0
         with:
           app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
