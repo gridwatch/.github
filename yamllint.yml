@@ -10,6 +10,8 @@ ignore: |
   **/*.tftpl.yml
   .terraform/
   **/.terraform/
+  _vendor/
+  **/_vendor/
 
 # Registry data (themes, schemas, terrain profiles) column-aligns values for
 # readability. The `braces` and `colons` defaults cap whitespace padding, so
