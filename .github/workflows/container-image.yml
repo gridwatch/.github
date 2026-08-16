@@ -50,6 +50,13 @@ on:
           decision, not a side effect of a workflow change
         type: boolean
         default: false
+      vendor-go-modules:
+        description: >-
+          Run `go mod vendor` on the runner before the build, so the
+          Containerfile builds with -mod=vendor and no credential ever
+          enters the container build.
+        type: boolean
+        default: false
     secrets:
       # The registry this builds into. Set on each container repo by
       # infrastructure-platform, which owns the registry itself.
@@ -73,11 +80,10 @@ on:
       # build cache. Optional; absent callers build unauthenticated.
       COMPOSER_AUTH_TOKEN:
         required: false
-      # Cross-repo GitHub PAT for `go mod download` of private gridwatch
-      # modules inside the build. A build-arg rather than a BuildKit secret
-      # because the same Containerfile must also build under `az acr build`,
-      # which has no secret mounts; the arg is builder-stage only and the
-      # netrc it feeds is removed in the same layer.
+      # Cross-repo GitHub PAT used ON THE RUNNER to vendor the private
+      # gridwatch modules before the build. It is never passed into the
+      # container build in any form — a leaked build environment or image
+      # cannot hold it.
       REPO_ACCESS_TOKEN:
         required: false
 
@@ -108,6 +114,32 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@v7.0.0
+        if: inputs.vendor-go-modules
+        with:
+          go-version-file: go.mod
+
+      # Vendoring happens on the runner, where the credential legitimately
+      # lives; the rewrite is removed straight after, and the build below
+      # receives a context that needs no network and no token at all.
+      - name: Vendor Go modules
+        if: inputs.vendor-go-modules
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::vendor-go-modules needs REPO_ACCESS_TOKEN to fetch the private gridwatch modules"
+            exit 1
+          fi
+          export GOPRIVATE="github.com/gridwatch/*"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+          # The trap scrubs the token-bearing rewrite however the step ends;
+          # a failed vendor must not leave it behind for later steps.
+          trap 'git config --global --remove-section url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/" 2>/dev/null || true' EXIT
+          go mod vendor
 
       - name: Set version
         id: version
@@ -152,7 +184,6 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
           VERSION: ${{ steps.version.outputs.VERSION }}
           COMPOSER_AUTH_TOKEN: ${{ secrets.COMPOSER_AUTH_TOKEN }}
-          REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
           # Needed here as well as on the push below: an unset GHCR leaves the
           # second `-t` off, and the push then fails on a tag that was never
           # applied rather than on anything to do with the registry.
@@ -167,20 +198,11 @@ jobs:
           # process doesn't inherit it. Either way the multi-stage
           # Containerfile keeps it out of the runtime image.
           COMPOSER_AUTH_FILE=$(mktemp)
-          GO_MODULES_TOKEN_FILE=$(mktemp)
-          trap 'rm -f "$COMPOSER_AUTH_FILE" "$GO_MODULES_TOKEN_FILE"' EXIT
+          trap 'rm -f "$COMPOSER_AUTH_FILE"' EXIT
           if [ -n "$COMPOSER_AUTH_TOKEN" ]; then
             jq -nc '{"github-oauth":{"github.com":env.COMPOSER_AUTH_TOKEN}}' > "$COMPOSER_AUTH_FILE"
           fi
           unset COMPOSER_AUTH_TOKEN
-          # The module token is offered both ways: as a BuildKit secret for
-          # Containerfiles that can use `RUN --mount=type=secret` (crossband,
-          # backbrief), and as a build-arg for the one that must also build
-          # under `az acr build`, which has no secret mounts (theater-server).
-          # Captured then unset so the docker process does not inherit it.
-          printf '%s' "$REPO_ACCESS_TOKEN" > "$GO_MODULES_TOKEN_FILE"
-          GO_MODULES_TOKEN="$REPO_ACCESS_TOKEN"
-          unset REPO_ACCESS_TOKEN
           # A single build tagged for both registries, rather than two builds:
           # two would produce two digests for the same source, and every
           # signature and SBOM below is bound to a digest.
@@ -191,9 +213,7 @@ jobs:
           # shellcheck disable=SC2086 # TAGS is a deliberately split flag list
           DOCKER_BUILDKIT=1 docker build -f Containerfile \
             --build-arg VERSION="$VERSION" \
-            --build-arg GITHUB_TOKEN="$GO_MODULES_TOKEN" \
             --secret id=composer_auth,src="$COMPOSER_AUTH_FILE" \
-            --secret id=github_token,src="$GO_MODULES_TOKEN_FILE" \
             $TAGS .
 
       - name: Push image
