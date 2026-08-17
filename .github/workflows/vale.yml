@@ -18,10 +18,8 @@ on:
         type: string
         default: '!{_vendor,layouts,node_modules,public,vendor}/**'
     secrets:
-      REPO_ACCESS_TOKEN:
-        required: true
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
-      # private repository reads. Optional so callers may lag.
+      # The repo-access App halves, minted below into a per-run token for
+      # private repository reads. Optional so public and fork callers run.
       REPO_ACCESS_APP_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -43,8 +41,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
 
       # Mints a per-run installation token for the private repository
-      # read below — about an hour's life, contents read. Falls back to
-      # REPO_ACCESS_TOKEN while the fleet still carries it.
+      # read below — about an hour's life, contents read.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -67,7 +64,7 @@ jobs:
       # branch's config rather than main's.
       - name: Checkout tooling
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if [ -d ../tooling ]; then
             echo "../tooling is the workspace itself; using the checkout"
