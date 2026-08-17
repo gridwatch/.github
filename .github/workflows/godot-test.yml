@@ -101,10 +101,8 @@ on:
         type: string
         default: 'bin'
     secrets:
-      REPO_ACCESS_TOKEN:
-        required: false
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
-      # private repository reads. Optional so callers may lag.
+      # The repo-access App halves, minted below into a per-run token for
+      # private repository reads. Optional so public and fork callers run.
       REPO_ACCESS_APP_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -293,8 +291,7 @@ jobs:
       # Checked before the checkout, so a missing secret or unset input reports
       # what is wrong rather than failing opaquely inside actions/checkout.
       # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read. Falls back to
-      # REPO_ACCESS_TOKEN while the fleet still carries it.
+      # reads below — about an hour's life, contents read.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -307,7 +304,7 @@ jobs:
 
       - name: Check the inputs
         env:
-          REPO_ACCESS_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           SCHEMA_DIR: ${{ inputs.schema-dir }}
           ASSETS_DIRS: ${{ inputs.schema-assets-dirs }}
           TWELVE_BRAVO_REF: ${{ inputs.twelve-bravo-ref }}
@@ -316,7 +313,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=''
-          [ -n "${REPO_ACCESS_TOKEN}" ] || missing="${missing} credential(App-or-REPO_ACCESS_TOKEN)"
+          [ -n "${APP_TOKEN}" ] || missing="${missing} credential(repo-access-app)"
           [ -n "${SCHEMA_DIR}" ] || missing="${missing} schema-dir"
           [ -n "${ASSETS_DIRS//[[:space:]]/}" ] || missing="${missing} schema-assets-dirs"
           [ -n "${TWELVE_BRAVO_REF}" ] || missing="${missing} twelve-bravo-ref"
@@ -338,7 +335,7 @@ jobs:
         with:
           repository: gridwatch/twelve-bravo
           ref: ${{ inputs.twelve-bravo-ref }}
-          token: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           path: twelve-bravo
           persist-credentials: false
 
