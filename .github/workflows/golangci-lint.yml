@@ -36,12 +36,8 @@ on:
       # request from a fork receives no secrets at all, so a required secret
       # would fail the run before a step executed. The lint config comes from
       # the public `.github` repository precisely so linting never depends on
-      # one; only private sibling checkouts do.
-      REPO_ACCESS_TOKEN:
-        required: false
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
-      # fetching the private gridwatch Go modules. Optional so public and
-      # fork callers still run.
+      # a credential; only private sibling checkouts do, guarded on the
+      # minted token being non-empty.
       REPO_ACCESS_APP_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -71,8 +67,7 @@ jobs:
 
       # Mints a per-run installation token for the private gridwatch Go
       # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation. Falls back to REPO_ACCESS_TOKEN
-      # below while the fleet still carries it.
+      # repo-access App's installation.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -85,14 +80,14 @@ jobs:
 
       - name: Checkout sibling repositories
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLONE_REGISTRIES: ${{ inputs.clone-registries }}
           SIBLING_MODULES: ${{ inputs.sibling-modules }}
         run: |
           # All private; skipped without a token. A public caller has no
           # private siblings, and its config already came from the clone above.
           if [ -z "${GH_TOKEN}" ]; then
-            echo "no REPO_ACCESS_TOKEN; skipping private sibling checkouts"
+            echo "no repo-access App token; skipping private sibling checkouts"
             exit 0
           fi
           for mod in ${SIBLING_MODULES}; do
@@ -117,11 +112,11 @@ jobs:
       # authentication failure.
       - name: Configure private module access
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
-            echo "no REPO_ACCESS_TOKEN; leaving module resolution on the public proxy"
+            echo "no repo-access App token; leaving module resolution on the public proxy"
             exit 0
           fi
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
