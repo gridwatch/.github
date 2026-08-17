@@ -59,10 +59,21 @@ jobs:
       # the private tooling repository, and a repo-local .vale.ini points its
       # StylesPath at ../tooling/vale/styles — so the clone lands as a sibling
       # of the workspace, matching a developer's checkout layout.
+      #
+      # When the calling repository IS tooling, ../tooling resolves to the
+      # workspace itself (/home/runner/work/tooling/tooling), so the clone
+      # fails on a non-empty destination — and is unnecessary anyway: using
+      # the checkout means a tooling pull request lints against its own
+      # branch's config rather than main's.
       - name: Checkout tooling
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
-        run: git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+        run: |
+          if [ -d ../tooling ]; then
+            echo "../tooling is the workspace itself; using the checkout"
+          else
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+          fi
 
       - name: Install Vale
         env:
