@@ -19,5 +19,3 @@ jobs:
     with:
       copy-yamllint-config: true
       filter-regex-exclude: '(Taskfile\.yml|tooling/|_vendor/)'
-    secrets:
-      REPO_ACCESS_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN }}
