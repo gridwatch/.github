@@ -1,0 +1,92 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Vale
+
+on:
+  workflow_call:
+    inputs:
+      glob:
+        description: "Vale --glob pattern selecting the files to lint"
+        type: string
+        default: '!{vendor,node_modules}/**'
+    secrets:
+      REPO_ACCESS_TOKEN:
+        required: true
+      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
+      # private repository reads. Optional so callers may lag.
+      REPO_ACCESS_APP_ID:
+        required: false
+      REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  vale:
+    runs-on: ubuntu-latest
+    # A step `if` cannot read the secrets context, so the two App halves are
+    # reduced here — where secrets are legal — to one non-secret boolean the
+    # mint step's condition can test.
+    env:
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+
+      # Mints a per-run installation token for the private repository
+      # read below — about an hour's life, contents read. Falls back to
+      # REPO_ACCESS_TOKEN while the fleet still carries it.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
+          private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      # The shared config, styles directory and committed vocabularies live in
+      # the private tooling repository, and a repo-local .vale.ini points its
+      # StylesPath at ../tooling/vale/styles — so the clone lands as a sibling
+      # of the workspace, matching a developer's checkout layout.
+      - name: Checkout tooling
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+        run: git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
+
+      - name: Install Vale
+        env:
+          VALE_VERSION: "3.17.1"
+          VALE_SHA256: "db947f89f2292e6a0381a61de155f6a5f5cb4cb460ca178ea412ef605559cefd"
+        run: |
+          install_dir="$(mktemp -d)"
+          tarball="${install_dir}/vale.tar.gz"
+          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" -o "${tarball}"
+          echo "${VALE_SHA256}  ${tarball}" | sha256sum -c -
+          mkdir -p "${install_dir}/bin"
+          tar -xzf "${tarball}" -C "${install_dir}/bin" vale
+          echo "${install_dir}/bin" >> "${GITHUB_PATH}"
+
+      # A repo with its own .vale.ini lints against it; everything else uses
+      # the shared config — the same resolution a developer's
+      # `task lint-prose` performs via VALE_CONFIG. `vale sync` downloads the
+      # Microsoft and alex packages into the StylesPath, which is gitignored
+      # in tooling and so absent from the fresh clone.
+      - name: Run Vale
+        env:
+          VALE_GLOB: ${{ inputs.glob }}
+        run: |
+          config="../tooling/vale.ini"
+          if [ -f .vale.ini ]; then
+            config=".vale.ini"
+          fi
+          vale sync --config "${config}"
+          vale --config "${config}" --glob "${VALE_GLOB}" .
