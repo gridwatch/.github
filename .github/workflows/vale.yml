@@ -11,10 +11,12 @@ name: Vale
 on:
   workflow_call:
     inputs:
+      # Callers always pass this explicitly (see the caller template); the
+      # default only backstops a hand-written caller.
       glob:
         description: "Vale --glob pattern selecting the files to lint"
         type: string
-        default: '!{vendor,node_modules}/**'
+        default: '!{_vendor,layouts,node_modules,public,vendor}/**'
     secrets:
       REPO_ACCESS_TOKEN:
         required: true
