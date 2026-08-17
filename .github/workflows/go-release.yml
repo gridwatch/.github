@@ -45,9 +45,7 @@ on:
         type: boolean
         default: false
     secrets:
-      REPO_ACCESS_TOKEN:
-        required: true
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
+      # The repo-access App halves, minted below into a per-run token for
       # fetching the private gridwatch Go modules. Optional so public and
       # fork callers still run.
       REPO_ACCESS_APP_ID:
@@ -79,8 +77,7 @@ jobs:
 
       # Mints a per-run installation token for the private gridwatch Go
       # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation. Falls back to REPO_ACCESS_TOKEN
-      # below while the fleet still carries it.
+      # repo-access App's installation.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -93,7 +90,7 @@ jobs:
 
       - name: Checkout sibling repositories
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLONE_REGISTRIES: ${{ inputs.clone-registries }}
           SIBLING_MODULES: ${{ inputs.sibling-modules }}
         run: |
@@ -117,7 +114,7 @@ jobs:
       # needs to fetch them.
       - name: Configure private module access
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
