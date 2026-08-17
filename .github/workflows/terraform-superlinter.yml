@@ -10,13 +10,6 @@ name: Terraform Super-Linter
 
 on:
   workflow_call:
-    secrets:
-      REPO_ACCESS_TOKEN:
-        # Accepted (and currently unused) so callers that still pass it after
-        # the .github/linters/ migration don't startup_failure with
-        # "secret X is not declared on the called workflow". Drop this once
-        # all caller workflows stop passing the secret.
-        required: false
 
 # Keyed on the SHA for pushes and the ref for pull requests. On a PR, cancelling
 # the previous run when a new commit lands is what we want -- only the tip needs
