@@ -38,10 +38,8 @@ on:
         type: string
         required: true
     secrets:
-      REPO_ACCESS_TOKEN:
-        required: true
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
-      # private repository reads. Optional so callers may lag.
+      # The repo-access App halves, minted below into a per-run token for
+      # private repository reads. Optional so public and fork callers run.
       REPO_ACCESS_APP_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -76,8 +74,7 @@ jobs:
       #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read. Falls back to
-      # REPO_ACCESS_TOKEN while the fleet still carries it.
+      # reads below — about an hour's life, contents read.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -94,7 +91,7 @@ jobs:
           repository: gridwatch/twelve-bravo
           ref: ${{ inputs.twelve-bravo-ref }}
           path: twelve-bravo
-          token: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
