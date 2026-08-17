@@ -44,13 +44,6 @@ on:
         description: 'Copy yamllint.yml from tooling into workspace'
         type: boolean
         default: false
-    secrets:
-      # Optional, and unused by this workflow — the lint configs come from the
-      # public `.github` repository, so nothing here needs a credential. Kept
-      # declared because callers still pass it: a caller passing a secret the
-      # reusable does not declare fails the run outright.
-      REPO_ACCESS_TOKEN:
-        required: false
 
 permissions:
   contents: read
