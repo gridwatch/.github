@@ -57,6 +57,16 @@ on:
           enters the container build.
         type: boolean
         default: false
+      composer-auth:
+        description: >-
+          Feed the minted App token to Composer as a github-oauth
+          credential, wrapped into a COMPOSER_AUTH JSON blob and exposed
+          to `docker build` as a BuildKit secret (id=composer_auth) —
+          NOT a build-arg, which would land in image metadata and the
+          build cache. For consumers whose composer.json declares
+          private gridwatch VCS packages.
+        type: boolean
+        default: false
     secrets:
       # The registry this builds into. Set on each container repo by
       # infrastructure-platform, which owns the registry itself.
@@ -72,23 +82,11 @@ on:
         required: false
       DHI_PASSWORD:
         required: false
-      # Cross-repo GitHub PAT for Composer to clone private VCS
-      # packages declared in the consumer's composer.json. When set,
-      # it's wrapped into a github-oauth COMPOSER_AUTH JSON blob and
-      # exposed to `docker build` as a BuildKit secret (id=composer_auth)
-      # — NOT a build-arg, which would land in image metadata and the
-      # build cache. Optional; absent callers build unauthenticated.
-      COMPOSER_AUTH_TOKEN:
-        required: false
-      # Cross-repo GitHub PAT used ON THE RUNNER to vendor the private
-      # gridwatch modules before the build. It is never passed into the
-      # container build in any form — a leaked build environment or image
-      # cannot hold it.
-      REPO_ACCESS_TOKEN:
-        required: false
-      # The repo-access App halves: preferred over REPO_ACCESS_TOKEN for
-      # fetching the private gridwatch Go modules. Optional so public and
-      # fork callers still run.
+      # The repo-access App halves, minted ON THE RUNNER into a per-run
+      # token that vendors the private gridwatch modules and, when
+      # composer-auth is set, authenticates Composer. The token is never
+      # passed into the container build in any form beyond the BuildKit
+      # composer_auth secret — a leaked image cannot hold it.
       REPO_ACCESS_APP_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -134,12 +132,11 @@ jobs:
 
       # Mints a per-run installation token for the private gridwatch Go
       # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation. Falls back to REPO_ACCESS_TOKEN
-      # below while the fleet still carries it.
+      # repo-access App's installation.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
-        if: ${{ inputs.vendor-go-modules && env.APP_AUTH_CONFIGURED == 'true' }}
+        if: ${{ (inputs.vendor-go-modules || inputs.composer-auth) && env.APP_AUTH_CONFIGURED == 'true' }}
         uses: actions/create-github-app-token@v3.2.0
         with:
           app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
@@ -152,11 +149,11 @@ jobs:
       - name: Vendor Go modules
         if: inputs.vendor-go-modules
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.REPO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::vendor-go-modules needs REPO_ACCESS_TOKEN to fetch the private gridwatch modules"
+            echo "::error::vendor-go-modules needs the repo-access App to fetch the private gridwatch modules"
             exit 1
           fi
           export GOPRIVATE="github.com/gridwatch/*"
@@ -208,7 +205,7 @@ jobs:
         env:
           IMAGE_NAME: ${{ inputs.image-name }}
           VERSION: ${{ steps.version.outputs.VERSION }}
-          COMPOSER_AUTH_TOKEN: ${{ secrets.COMPOSER_AUTH_TOKEN }}
+          COMPOSER_AUTH_TOKEN: ${{ inputs.composer-auth && steps.app-token.outputs.token || '' }}
           # Needed here as well as on the push below: an unset GHCR leaves the
           # second `-t` off, and the push then fails on a tag that was never
           # applied rather than on anything to do with the registry.
