@@ -1,0 +1,40 @@
+---
+
+# markdownlint for Hugo page content. Named by a caller through the
+# superlinter-prose reusable's `markdown-config` input; everything else gets
+# `superlinter-markdownlint.tftpl.yml`.
+#
+# Three rules in the fleet config assume a standalone markdown document. A
+# Hugo content file is a page body, and breaks all three by construction.
+
+default: true
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md001.md
+# Disabled: the page title lives in front matter and Hugo renders it as the
+# h1, so a body that opens at `###` has not skipped a level — the h1 and h2
+# markdownlint is looking for are in the template, not the file.
+MD001: false
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md013.md
+MD013:
+  code_blocks: true
+  line_length: 320
+  tables: false
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md024.md
+# Disabled: a component reference repeats the same section headings —
+# "Anatomy", "Behavior", "Don't" — once per component. That repetition is the
+# structure, not a mistake.
+MD024: false
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md033.md
+# Disabled rather than allow-listed: a design system documents its visual
+# language with embedded SVG, and the elements involved are the whole SVG
+# vocabulary — text, rect, g, circle, path, radialGradient — alongside the
+# div and span that carry swatches. An allow-list of that set is the rule
+# turned off with extra steps.
+MD033: false
+
+# see https://github.com/DavidAnson/markdownlint/blob/main/doc/md060.md
+# Disabled: terraform-docs generates compact tables without spaces around pipes.
+MD060: false
