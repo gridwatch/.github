@@ -44,6 +44,17 @@ on:
         description: 'Copy yamllint.yml from tooling into workspace'
         type: boolean
         default: false
+      # Which markdownlint config in the shared `.github` repository to copy in.
+      # The fleet config assumes a standalone markdown document: it forbids
+      # inline HTML, requires headings to increment by one from an h1 in the
+      # file, and rejects a repeated heading. Hugo page content satisfies none
+      # of those — the title lives in front matter, sections repeat per
+      # component, and a design system documents itself with embedded SVG. Such
+      # a repo names a config written for that shape instead.
+      markdown-config:
+        description: 'markdownlint config filename in gridwatch/.github'
+        type: string
+        default: 'markdownlint.yml'
 
 permissions:
   contents: read
@@ -78,9 +89,10 @@ jobs:
       - name: Copy linter configs into workspace
         env:
           COPY_YAMLLINT_CONFIG: ${{ inputs.copy-yamllint-config }}
+          MARKDOWN_CONFIG: ${{ inputs.markdown-config }}
         run: |
           mkdir -p .github/linters
-          cp ../fleet-config/markdownlint.yml .github/linters/.markdownlint.yml
+          cp "../fleet-config/${MARKDOWN_CONFIG}" .github/linters/.markdownlint.yml
           if [ "${COPY_YAMLLINT_CONFIG}" = "true" ]; then
             cp ../fleet-config/yamllint.yml .github/linters/.yamllint.yml
           fi
