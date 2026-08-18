@@ -5,6 +5,11 @@ extends: default
 # .tftpl.yml are Terraform templates with %{...} and {{...}} interpolations
 # that are not valid YAML until rendered — yamllint can't reason about them.
 # .terraform/modules/ holds downloaded module sources, not first-party code.
+#
+# node_modules/ and _vendor/ are dependency trees; dist/ and public/ are build output.
+# None of it is written here, and linting it mostly surfaces third-party or generated noise.
+# CI avoids these trees (Super-Linter's FILTER_REGEX_EXCLUDE plus the repos' .gitignore), so
+# the noise tends to appear only when a developer runs the linter over a full working tree.
 ignore: |
   *.tftpl.yml
   **/*.tftpl.yml
@@ -12,6 +17,12 @@ ignore: |
   **/.terraform/
   _vendor/
   **/_vendor/
+  dist/
+  **/dist/
+  node_modules/
+  **/node_modules/
+  public/
+  **/public/
 
 # Registry data (themes, schemas, terrain profiles) column-aligns values for
 # readability. The `braces` and `colons` defaults cap whitespace padding, so
