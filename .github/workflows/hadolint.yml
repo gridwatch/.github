@@ -20,6 +20,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Cache Hadolint image
