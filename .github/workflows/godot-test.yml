@@ -132,6 +132,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
       - uses: actions/setup-dotnet@v6.0.0
@@ -368,6 +370,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # Without this the download asks for an artifact called `coverage-` and
       # fails on a name nothing produced, which reads as a missing artifact
@@ -468,6 +472,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
       - uses: actions/setup-dotnet@v6.0.0
@@ -575,6 +581,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
       - uses: actions/setup-dotnet@v6.0.0
