@@ -67,6 +67,7 @@ jobs:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       # The shared Super-Linter configs live in the public `.github` repository,
