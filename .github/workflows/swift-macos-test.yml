@@ -41,6 +41,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # Mints a per-run installation token for the private repository
       # reads below — about an hour's life, contents read.
