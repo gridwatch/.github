@@ -34,6 +34,7 @@ jobs:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
         with:
+          persist-credentials: false
           submodules: true
           fetch-depth: 0
 
