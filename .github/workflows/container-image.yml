@@ -123,6 +123,8 @@ jobs:
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@v7.0.0
@@ -192,7 +194,10 @@ jobs:
       # federated identity.
       - name: Log in to GHCR
         if: inputs.ghcr
-        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login "$GHCR_LOGIN_SERVER" -u "${{ github.actor }}" --password-stdin
+        run: printf '%s' "$GHCR_TOKEN" | docker login "$GHCR_LOGIN_SERVER" -u "$GHCR_USERNAME" --password-stdin
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to dhi.io
         if: inputs.dhi-login
