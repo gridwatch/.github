@@ -52,7 +52,7 @@ jobs:
       # see: https://github.com/github/codeql-action/releases/tag/v4.37.6
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.37.6
+        uses: github/codeql-action/upload-sarif@v4.37.7
         with:
           sarif_file: results.sarif
         continue-on-error: true
