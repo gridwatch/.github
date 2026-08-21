@@ -143,4 +143,5 @@ jobs:
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
           args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ./...
+          version: "v2.13.1"
           working-directory: ${{ inputs.working-directory }}
