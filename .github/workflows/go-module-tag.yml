@@ -1,0 +1,86 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Go Module Tag
+
+# Cuts the next patch tag for a library module when main moves.
+#
+# This exists because a Go module's consumers resolve by tag: they pin
+# `github.com/gridwatch/<mod> vX.Y.Z`, and a merge to main is invisible to
+# every one of them until a tag exists. Before this, tags were pushed by hand
+# and drifted behind main indefinitely, so Dependabot had nothing newer to
+# offer and first-party dependency fixes never propagated.
+#
+# Deliberately NOT the go-release workflow beside it. That one is triggered by
+# a tag and builds binaries; these modules have no `cmd/` and nothing to
+# upload. Here the tag *is* the deliverable.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the tag and its release.
+      contents: write
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          # The whole tag list is the input to the version bump, and a shallow
+          # clone carries none of it — the next version would restart at
+          # v0.0.1 on every run.
+          fetch-depth: 0
+
+      - name: Cut the next patch tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Idempotence: a re-run of this workflow, or a second push landing on
+          # an already-tagged commit, must not mint a second version for the
+          # same tree.
+          existing=$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' | head -n1)
+          if [ -n "${existing}" ]; then
+            echo "${SHA} is already tagged ${existing}; nothing to do"
+            exit 0
+          fi
+
+          # -v:refname sorts by version, not lexically, so v0.10.0 is correctly
+          # newer than v0.9.0. A plain sort gets that backwards and the next
+          # release would move the module backwards.
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          latest="${latest:-v0.0.0}"
+
+          IFS='.' read -r major minor patch <<< "${latest#v}"
+          next="v${major}.${minor}.$((patch + 1))"
+
+          # Patch only, by design. A minor is a judgement about the API and is
+          # cut by hand; a major is not even a tag in Go — v2+ requires the
+          # module path itself to gain a /v2 suffix, so an automatic v2.0.0
+          # would silently break every consumer while looking like a release.
+          echo "${latest} -> ${next}"
+
+          # `gh release create` creates the tag at --target, so there is no
+          # separate git tag and push. Note the tag is authored by
+          # GITHUB_TOKEN, which by design does not trigger workflows listening
+          # on `push: tags` — harmless here because these modules have no
+          # tag-triggered workflow, but the day one is added it needs an App
+          # token instead.
+          gh release create "${next}" \
+            --repo "${{ github.repository }}" \
+            --target "${SHA}" \
+            --title "${next}" \
+            --generate-notes
