@@ -70,9 +70,9 @@ jobs:
       # on private repos, which isn't licensed right now. Results remain
       # available via the scorecard-results artifact below. Re-enable when
       # Code Security is turned on.
-      # see: https://github.com/github/codeql-action/releases/tag/v4.37.6
+      # see: https://github.com/github/codeql-action/releases/tag/v4.37.8
       # - name: Upload SARIF to code scanning
-      #   uses: github/codeql-action/upload-sarif@v4.37.6
+      #   uses: github/codeql-action/upload-sarif@v4.37.8
       #   with:
       #     sarif_file: results.sarif
 
