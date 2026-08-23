@@ -131,12 +131,12 @@ jobs:
 
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           # The csprojs set RestorePackagesWithLockFile, so the lock files are
@@ -145,7 +145,7 @@ jobs:
           cache-dependency-path: '**/packages.lock.json'
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
@@ -263,7 +263,7 @@ jobs:
         timeout-minutes: 10
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: coverage-${{ matrix.os }}
@@ -271,7 +271,7 @@ jobs:
           if-no-files-found: warn
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: test-results-${{ matrix.os }}
@@ -298,7 +298,7 @@ jobs:
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
         if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
-        uses: actions/create-github-app-token@v3.2.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ secrets.REPO_ACCESS_APP_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
@@ -328,12 +328,12 @@ jobs:
       # never written into a .git/config the `go run` step could read back.
       #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: gridwatch/twelve-bravo
           ref: ${{ inputs.twelve-bravo-ref }}
@@ -342,7 +342,7 @@ jobs:
           persist-credentials: false
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: twelve-bravo/go.mod
           cache-dependency-path: twelve-bravo/go.sum
@@ -369,7 +369,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -388,7 +388,7 @@ jobs:
           fi
 
       # see: https://github.com/actions/download-artifact/releases/tag/v8.0.1
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: coverage-${{ inputs.coverage-from-runner }}
           path: coverage
@@ -471,12 +471,12 @@ jobs:
       GODOT_VERSION: ${{ inputs.godot-version }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           cache: true
@@ -485,7 +485,7 @@ jobs:
       # Same key as the test job, so within a run this restores the editor that
       # job already downloaded rather than fetching it again.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
@@ -494,7 +494,7 @@ jobs:
       # The editor alone cannot export. The templates are a separate ~1GB
       # download, cached on their own key for the same reason.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: export-templates
         with:
           path: ~/Library/Application Support/Godot/export_templates
@@ -565,7 +565,7 @@ jobs:
           ls -la "${OUT_DIR}"
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: macos-build
           path: ${{ inputs.export-output-dir }}
@@ -580,12 +580,12 @@ jobs:
       GODOT_VERSION: ${{ inputs.godot-version }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       # see: https://github.com/actions/setup-dotnet/releases/tag/v6.0.0
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
           cache: true
@@ -594,14 +594,14 @@ jobs:
       # Same key as the test job, so within a run this restores the editor that
       # job already downloaded rather than fetching it again.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
           key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: export-templates
         with:
           path: ${{ runner.temp }}\godot-templates
@@ -668,7 +668,7 @@ jobs:
           Get-ChildItem $env:OUT_DIR
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-build
           path: ${{ inputs.export-output-dir }}
