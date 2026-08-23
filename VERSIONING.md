@@ -85,6 +85,16 @@ where `N` is a sequential build number for that day (e.g. `v20260321-1`, `v20260
 
 Never push `latest` to a registry. Always use an explicit `vYYYYMMDD-N` tag.
 
+## Published Terraform Modules
+
+The `terraform-*` module repositories are the one exception, and they use semantic versioning:
+
+```text
+vX.Y.Z
+```
+
+This is not a preference. The Terraform Registry parses a module's git tags as semver to discover which versions exist, and `v20260823-1` carries no MINOR or PATCH component — so a module tagged that way registers and then offers no version anyone can consume.
+
 ## Language Runtimes
 
 | Runtime            | Minimum Version |
