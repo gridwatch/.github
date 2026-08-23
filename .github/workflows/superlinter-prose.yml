@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -101,7 +101,7 @@ jobs:
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Cache Super-Linter image
         id: cache
-        uses: actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: /tmp/super-linter-slim-v8.7.0.tar
           key: super-linter-slim-v8.7.0
@@ -117,7 +117,7 @@ jobs:
           docker save ghcr.io/super-linter/super-linter:slim-v8.7.0 > /tmp/super-linter-slim-v8.7.0.tar
 
       # see: https://github.com/super-linter/super-linter/releases/tag/v8.7.0
-      - uses: super-linter/super-linter/slim@v8.7.0
+      - uses: super-linter/super-linter/slim@4ce20838b8ab83717e78138c5b3a1407148e0918  # v8.7.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: main
