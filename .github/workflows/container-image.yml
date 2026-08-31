@@ -87,7 +87,7 @@ on:
       # composer-auth is set, authenticates Composer. The token is never
       # passed into the container build in any form beyond the BuildKit
       # composer_auth secret — a leaked image cannot hold it.
-      REPO_ACCESS_APP_ID:
+      REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
@@ -119,7 +119,7 @@ jobs:
       # A step `if` cannot read the secrets context, so the two App halves
       # are reduced here — where secrets are legal — to one non-secret
       # boolean the mint step's condition can test.
-      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
