@@ -23,24 +23,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - name: Cache Hadolint image
-        id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: /tmp/hadolint-v2.14.0-debian.tar
-          key: hadolint-v2.14.0-debian
-
-      - name: Load cached image
-        if: steps.cache.outputs.cache-hit == 'true'
-        run: docker load < /tmp/hadolint-v2.14.0-debian.tar
-
-      - name: Pull and save image
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          docker pull ghcr.io/hadolint/hadolint:v2.14.0-debian
-          docker save ghcr.io/hadolint/hadolint:v2.14.0-debian > /tmp/hadolint-v2.14.0-debian.tar
-
       # see: https://github.com/hadolint/hadolint-action/releases/tag/v3.4.0
       - uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6  # v3.4.0
         with:
