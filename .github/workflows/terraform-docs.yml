@@ -42,24 +42,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - name: Cache terraform-docs image
-        id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: /tmp/terraform-docs-v1.4.1.tar
-          key: terraform-docs-gh-actions-v1.4.1
-
-      - name: Load cached image
-        if: steps.cache.outputs.cache-hit == 'true'
-        run: docker load < /tmp/terraform-docs-v1.4.1.tar
-
-      - name: Pull and save image
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          docker pull quay.io/terraform-docs/gh-actions:1.4.1
-          docker save quay.io/terraform-docs/gh-actions:1.4.1 > /tmp/terraform-docs-v1.4.1.tar
-
       # see: https://github.com/terraform-docs/gh-actions/releases/tag/v1.4.1
       - name: Check terraform-docs
         uses: terraform-docs/gh-actions@6de6da0cefcc6b4b7a5cbea4d79d97060733093c  # v1.4.1
