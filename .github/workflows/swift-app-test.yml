@@ -26,7 +26,7 @@ on:
     secrets:
       # The repo-access App halves, minted below into a per-run token for
       # private repository reads. Optional so public and fork callers run.
-      REPO_ACCESS_APP_ID:
+      REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
@@ -41,7 +41,7 @@ jobs:
     # reduced here — where secrets are legal — to one non-secret boolean the
     # mint step's condition can test.
     env:
-      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     # A cap so a wedged step can never burn the full 6h default. Kept above the
     # step caps so the cache post-step still fits. The step caps, not this one,
     # are what make a stall fail fast.
