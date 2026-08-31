@@ -23,8 +23,8 @@ name: Registries Export
 on:
   workflow_call:
     secrets:
-      EXPORT_APP_ID:
-        description: 'App ID of the CAPSTONE export GitHub App.'
+      EXPORT_APP_CLIENT_ID:
+        description: 'Client ID of the CAPSTONE export GitHub App.'
         required: true
       EXPORT_APP_PRIVATE_KEY:
         description: 'Private key of the CAPSTONE export GitHub App.'
