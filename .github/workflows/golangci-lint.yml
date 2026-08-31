@@ -38,7 +38,7 @@ on:
       # the public `.github` repository precisely so linting never depends on
       # a credential; only private sibling checkouts do, guarded on the
       # minted token being non-empty.
-      REPO_ACCESS_APP_ID:
+      REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
@@ -53,7 +53,7 @@ jobs:
     # reduced here — where secrets are legal — to one non-secret boolean the
     # mint step's condition can test.
     env:
-      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
