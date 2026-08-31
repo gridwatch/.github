@@ -40,7 +40,7 @@ on:
     secrets:
       # The repo-access App halves, minted below into a per-run token for
       # private repository reads. Optional so public and fork callers run.
-      REPO_ACCESS_APP_ID:
+      REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
@@ -56,7 +56,7 @@ jobs:
     # reduced here — where secrets are legal — to one non-secret boolean the
     # mint step's condition can test.
     env:
-      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
       # persist-credentials: false so the token backing the checkout below is
       # never written into a .git/config the `go run` step could read back.
