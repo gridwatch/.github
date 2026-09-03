@@ -67,10 +67,13 @@ jobs:
           IFS='.' read -r major minor patch <<< "${latest#v}"
           next="v${major}.${minor}.$((patch + 1))"
 
-          # Patch only, by design. A minor is a judgement about the API and is
-          # cut by hand; a major is not even a tag in Go — v2+ requires the
-          # module path itself to gain a /v2 suffix, so an automatic v2.0.0
-          # would silently break every consumer while looking like a release.
+          # Patch only, by design. A minor is a judgement about the API and
+          # is cut by hand; a major is not even a tag in Go — v2+ requires the
+          # module path itself to gain a /vN suffix. An automatic v2.0.0 would
+          # be a release nobody could adopt: Go rejects it outright ("should be
+          # v0 or v1, not v2"), and +incompatible does not apply to a module
+          # carrying an explicit go.mod. Consumers would not break, they would
+          # silently stay put — which is the harder failure to notice.
           echo "${latest} -> ${next}"
 
           # `gh release create` creates the tag at --target, so there is no
