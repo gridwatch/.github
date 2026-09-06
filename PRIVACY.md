@@ -28,7 +28,7 @@ GRIDWATCH does not collect, store, or transmit any personal data. No accounts. N
 
 ## Analytics
 
-We use [Datadog](https://www.datadoghq.com/) to collect anonymized performance and usage metrics from our servers. These metrics help us understand system health and improve the simulator. They include:
+Our servers report anonymized performance and usage metrics to [Datadog](https://www.datadoghq.com/). These metrics help us understand system health and improve the simulator. They include:
 
 * **Server performance** — response times, error rates, uptime
 * **Simulation metrics** — number of sessions played, average turn count, action frequency
