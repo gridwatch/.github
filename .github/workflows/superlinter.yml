@@ -18,4 +18,4 @@ jobs:
     uses: gridwatch/.github/.github/workflows/superlinter-prose.yml@main
     with:
       copy-yamllint-config: true
-      filter-regex-exclude: '(Taskfile\.yml|tooling/|_vendor/)'
+      filter-regex-exclude: '(Taskfile\.yml|tooling/|_vendor/|\.specify/|specs/)'
