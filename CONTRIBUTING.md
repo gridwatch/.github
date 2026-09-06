@@ -17,7 +17,7 @@ Please try to include as much information as you can. Details like these are inc
 * Any modifications you've made relevant to the bug
 * Anything unusual about your environment or deployment
 
-Where applicable, we use _Issue Templates_ to help you structure this information in a clear way.
+Where applicable, this repository provides _Issue Templates_ to help you structure this information in a clear way.
 
 ## Contributing via Pull Requests
 
