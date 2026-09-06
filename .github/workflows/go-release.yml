@@ -44,6 +44,15 @@ on:
         description: 'Clone the registries repo as a sibling directory'
         type: boolean
         default: false
+      goreleaser:
+        description: >-
+          Build and publish with goreleaser from the repo's own
+          `.goreleaser.yaml` instead of the `go build` loop below. The config
+          then owns platforms, archives, ldflags and any Homebrew cask;
+          `platforms` and `version-var` are ignored. The stamp is still
+          verified here before anything is published.
+        type: boolean
+        default: false
     secrets:
       # The repo-access App halves, minted below into a per-run token for
       # fetching the private gridwatch Go modules. Optional so public and
@@ -51,6 +60,11 @@ on:
       REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
+      # Contents write on gridwatch/homebrew-tap and nothing else, read only
+      # by the goreleaser path when the config publishes a cask. Optional so
+      # the `go build` path and a cask-less config need nothing.
+      HOMEBREW_TAP_TOKEN:
         required: false
 
 permissions:
@@ -121,7 +135,26 @@ jobs:
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
+      # install-only: the build and publish are separate steps below, so the
+      # stamp check can sit between them.
+      #
+      # see: https://github.com/goreleaser/goreleaser-action/releases/tag/v7.2.3
+      - name: Install goreleaser
+        if: ${{ inputs.goreleaser }}
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+
+      # `build` writes the same dist/ layout `release` will, without touching
+      # GitHub, which is what lets the stamp be checked before publishing.
+      - name: Build with goreleaser
+        if: ${{ inputs.goreleaser }}
+        run: goreleaser build --clean
+
       - name: Build
+        if: ${{ !inputs.goreleaser }}
         env:
           BINARY_NAME: ${{ inputs.binary-name }}
           MAIN_PACKAGE: ${{ inputs.main-package }}
@@ -157,10 +190,33 @@ jobs:
       - name: Verify the stamp
         env:
           BINARY_NAME: ${{ inputs.binary-name }}
+          GORELEASER: ${{ inputs.goreleaser }}
           VERSION: ${{ github.ref_name }}
           VERSION_VAR: ${{ inputs.version-var }}
         run: |
           set -euo pipefail
+          if [ "${GORELEASER}" = "true" ]; then
+            # goreleaser's {{ .Version }} is the tag without its `v`, and its
+            # ldflags live in the repo's config rather than in version-var, so
+            # the check is unconditional here: a config that forgets to stamp
+            # fails the release rather than shipping a dev build.
+            stamp="${VERSION#v}"
+            checked=0
+            while IFS= read -r binary; do
+              if ! grep -qa -- "${stamp}" "${binary}"; then
+                echo "::error::${stamp} is not present in ${binary}; the ldflags stamp did not take"
+                exit 1
+              fi
+              checked=$((checked + 1))
+            done < <(find dist -type f \( -name "${BINARY_NAME}" -o -name "${BINARY_NAME}.exe" \))
+            if [ "${checked}" -eq 0 ]; then
+              echo "::error::no binaries found to verify; the build produced nothing"
+              exit 1
+            fi
+            echo "stamp verified in ${checked} binaries"
+            exit 0
+          fi
+
           if [ -z "${VERSION_VAR}" ]; then
             echo "no version-var configured; skipping stamp check"
             exit 0
@@ -191,7 +247,19 @@ jobs:
           fi
           echo "stamp verified in ${checked} binaries"
 
+      # `release --clean` rebuilds what `build` just produced: goreleaser has
+      # no way to publish an existing dist/, and a second build is cheaper
+      # than a release that was never checked. The tag is the one HEAD sits
+      # on, so as with --verify-tag below nothing is invented.
+      - name: Publish with goreleaser
+        if: ${{ inputs.goreleaser }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: goreleaser release --clean
+
       - name: Publish the release
+        if: ${{ !inputs.goreleaser }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ github.ref_name }}
