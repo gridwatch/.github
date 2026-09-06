@@ -61,10 +61,11 @@ on:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
-      # Contents write on gridwatch/homebrew-tap and nothing else, read only
-      # by the goreleaser path when the config publishes a cask. Optional so
-      # the `go build` path and a cask-less config need nothing.
-      HOMEBREW_TAP_TOKEN:
+      # Contents write on gridwatch/homebrew-tap and gridwatch/scoop-bucket and
+      # nothing else, read only by the goreleaser path when the config publishes
+      # a cask or a Scoop manifest. Optional: the `go build` path never reads it,
+      # and a goreleaser config that publishes neither artifact does not need it.
+      PACKAGE_REPO_TOKEN:
         required: false
 
 permissions:
@@ -255,7 +256,7 @@ jobs:
         if: ${{ inputs.goreleaser }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          PACKAGE_REPO_TOKEN: ${{ secrets.PACKAGE_REPO_TOKEN }}
         run: goreleaser release --clean
 
       - name: Publish the release
