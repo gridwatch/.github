@@ -1,0 +1,64 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+
+name: Frontend Super-Linter
+
+# JavaScript and CSS only. A separate reusable rather than more VALIDATE_* on
+# the prose one: Super-Linter refuses a run mixing true and false, so every
+# caller of one reusable gets every validator it names, and a repo with prose
+# and no scripts would fail on a linter with nothing to lint.
+on:
+  workflow_call:
+    inputs:
+      filter-regex-exclude:
+        description: 'Regex to exclude files from linting'
+        type: string
+        default: '(vendor/|_vendor/|node_modules/|static/vendor/|dist/|\.specify/|specs/|\.claude/)'
+
+permissions:
+  contents: read
+
+jobs:
+  superlinter:
+    name: superlinter
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # The shared configs live in the public `.github` repository, cloned
+      # outside the workspace and copied in, for the reasons the prose reusable
+      # gives: the caller must sit at the workspace root, and a clone inside it
+      # would be linted.
+      - name: Checkout linter configs
+        run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
+
+      # eslint keeps its own filename; stylelint is told its config filename via CSS_FILE_NAME.
+      - name: Copy linter configs into workspace
+        run: |
+          mkdir -p .github/linters
+          cp ../fleet-config/eslint.config.mjs .github/linters/eslint.config.mjs
+          cp ../fleet-config/stylelint.json .github/linters/.stylelintrc.json
+
+      # see: https://github.com/super-linter/super-linter/releases/tag/v8.7.0
+      - uses: super-linter/super-linter/slim@4ce20838b8ab83717e78138c5b3a1407148e0918  # v8.7.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: main
+          VALIDATE_JAVASCRIPT_ES: true
+          VALIDATE_CSS: true
+
+          # Named explicitly: v8 auto-discovery does not see files the copy step
+          # writes into .github/linters/, and the fallback is the bundled default.
+          JAVASCRIPT_ES_CONFIG_FILE: eslint.config.mjs
+          CSS_FILE_NAME: .stylelintrc.json
+
+          FILTER_REGEX_EXCLUDE: ${{ inputs.filter-regex-exclude }}
