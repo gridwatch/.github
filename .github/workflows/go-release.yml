@@ -197,8 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GORELEASER}" = "true" ]; then
-            # goreleaser's {{ .Version }} is the tag without its `v`, and its
-            # ldflags live in the repo's config rather than in version-var, so
+            # The configs stamp {{ .Tag }}, and grepping for the tag without
+            # its `v` matches that too. The ldflags live in the repo's config
+            # rather than in version-var, so
             # the check is unconditional here: a config that forgets to stamp
             # fails the release rather than shipping a dev build.
             stamp="${VERSION#v}"
