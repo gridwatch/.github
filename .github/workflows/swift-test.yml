@@ -23,22 +23,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - name: Cache Swift toolchain
-        id: cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: swift-6.3-RELEASE-osx.pkg
-          key: swift-6.3-RELEASE-osx
-
-      - name: Download Swift 6.3
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: curl -OL https://download.swift.org/swift-6.3-release/xcode/swift-6.3-RELEASE/swift-6.3-RELEASE-osx.pkg
-
-      - name: Install Swift 6.3
-        run: |
-          sudo installer -pkg swift-6.3-RELEASE-osx.pkg -target /
-          echo "TOOLCHAINS=swift" >> "$GITHUB_ENV"
-
+      # Runner's own Xcode toolchain. Installing an open-source one cost 61s of
+      # a 195s job for nothing: Package.swift asks for swift-tools-version 6.2.
       - name: Run tests
         run: swift test
