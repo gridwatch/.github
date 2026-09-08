@@ -38,6 +38,7 @@ jobs:
     # mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+    timeout-minutes: 60
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -81,10 +82,37 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Run tests
+      # Remote pins live in Vendor/**/Package.swift, not project.yml; the glob is
+      # scoped to Vendor/ so in-workspace .spm-cache can't change its own key.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore cached Swift packages
+        id: spm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .spm-cache
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('project.yml', 'Package.resolved', 'Vendor/**/Package.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ github.repository }}-
+
+      - name: Resolve Swift packages
+        timeout-minutes: 10
         env:
           PROJECT: ${{ inputs.project }}
           SCHEME: ${{ inputs.scheme }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          xcodebuild -project "${PROJECT}" \
+            -scheme "${SCHEME}" \
+            -clonedSourcePackagesDirPath .spm-cache \
+            -packageAuthorizationProvider netrc \
+            -resolvePackageDependencies
+
+      - name: Run tests
+        timeout-minutes: 30
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          GIT_TERMINAL_PROMPT: '0'
         run: |
           # Code signing is disabled for CI: a test run needs no signed product, and an app
           # with entitlements (iCloud, etc.) would otherwise demand a provisioning profile
@@ -92,7 +120,18 @@ jobs:
           xcodebuild -project "${PROJECT}" \
             -scheme "${SCHEME}" \
             -destination 'platform=macOS' \
+            -clonedSourcePackagesDirPath .spm-cache \
+            -packageAuthorizationProvider netrc \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             test
+
+      # Success-only, so a half-written cache from a failed resolve is never saved.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Swift package cache
+        if: steps.spm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .spm-cache
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('project.yml', 'Package.resolved', 'Vendor/**/Package.swift') }}
