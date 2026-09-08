@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   checkov:
@@ -25,14 +24,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # The shared config lives in the public `.github` repository, so this
-      # clone needs no credentials and behaves identically for a private
-      # caller, a public one, and a fork's pull request.
-      #
-      # It is cloned outside the workspace so the scan does not walk into it,
-      # then copied in — checkov-action is a Docker action and the runner mounts
-      # only the workspace, so a path outside it is unreadable from inside the
-      # container. The copy runs on the host, before the container starts.
+      # Config comes from the public `.github` repo, so no credential is needed.
+      # Cloned outside the workspace so the scan skips it, then copied in:
+      # checkov-action is a Docker action and only the workspace is mounted.
       - name: Checkout Checkov config
         run: |
           git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
@@ -49,10 +43,30 @@ jobs:
           quiet: true
           soft_fail: true
 
-      # see: https://github.com/github/codeql-action/releases/tag/v4.37.8
-      - name: Upload SARIF
+      # Replaces a SARIF upload that was 44s of a 72s job and could never land:
+      # Code Security is disabled on every Terraform repo, so the API answered
+      # 403 while `continue-on-error` reported it green.
+      - name: Summarise findings
         if: always()
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
-        with:
-          sarif_file: results.sarif
-        continue-on-error: true
+        run: |
+          set -euo pipefail
+          {
+            echo "## Checkov"
+            echo
+            if [ ! -f results.sarif ]; then
+              echo "No results file was produced."
+            elif [ "$(jq '[.runs[]?.results[]?] | length' results.sarif)" -eq 0 ]; then
+              echo "No failed checks."
+            else
+              echo "| Check | Description | Location |"
+              echo "|---|---|---|"
+              # Every field is optional in SARIF, and `set -e` would turn a
+              # missing one into a red build on a scan that is advisory today.
+              jq -r '.runs[]?.results[]? | [
+                  (.ruleId // "unknown"),
+                  ((.message.text // "") | gsub("\\s+"; " ") | gsub("\\|"; "\\|")),
+                  ((.locations[0].physicalLocation.artifactLocation.uri // "unknown")
+                    + ":" + ((.locations[0].physicalLocation.region.startLine // 0) | tostring))
+                ] | "| " + join(" | ") + " |"' results.sarif
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
