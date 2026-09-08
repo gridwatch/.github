@@ -8,6 +8,11 @@ name: Super-Linter
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/CODEOWNERS'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
 
 permissions:
