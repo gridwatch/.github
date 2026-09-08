@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
     # reduced here — where secrets are legal — to one non-secret boolean the
     # mint step's condition can test.
@@ -60,13 +60,16 @@ jobs:
       - name: Install SwiftLint
         env:
           SWIFTLINT_VERSION: "0.65.0"
-          SWIFTLINT_SHA256: "d6cb0aa7a2f5f1ef306fc9e37bcb54dc9a26facc8f7784ac0c3dd3eccf5c6ba6"
+          SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
         run: |
           install_dir="$(mktemp -d)"
           zip="${install_dir}/swiftlint.zip"
-          curl -fsSL "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip" -o "${zip}"
-          echo "${SWIFTLINT_SHA256}  ${zip}" | shasum -a 256 -c -
-          unzip -q "${zip}" -d "${install_dir}/bin"
+          curl -fsSL "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip" -o "${zip}"
+          echo "${SWIFTLINT_SHA256}  ${zip}" | sha256sum -c -
+          mkdir -p "${install_dir}/bin"
+          unzip -q -j "${zip}" swiftlint-static -d "${install_dir}/bin"
+          mv "${install_dir}/bin/swiftlint-static" "${install_dir}/bin/swiftlint"
+          chmod +x "${install_dir}/bin/swiftlint"
           echo "${install_dir}/bin" >> "${GITHUB_PATH}"
 
       # Test directories lint against swiftlint-tests.yml (relaxed rules for
