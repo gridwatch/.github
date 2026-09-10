@@ -145,3 +145,16 @@ jobs:
           args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ./...
           version: "v2.13.1"
           working-directory: ${{ inputs.working-directory }}
+
+      # golangci-lint reads the code; govulncheck reads what the code calls. Every
+      # repo's local `task lint-go` has run both, and CI ran only the first, so a
+      # vulnerable dependency passed CI and failed the next laptop that linted.
+      #
+      # see: https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
+      - name: Run govulncheck
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          # `go run` builds govulncheck itself, so a pin needing a newer Go than the
+          # caller's go directive fetches that toolchain here instead of failing to build.
+          GOTOOLCHAIN: auto
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
