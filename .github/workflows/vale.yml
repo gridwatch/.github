@@ -76,8 +76,8 @@ jobs:
 
       - name: Install Vale
         env:
-          VALE_VERSION: "3.17.1"
-          VALE_SHA256: "db947f89f2292e6a0381a61de155f6a5f5cb4cb460ca178ea412ef605559cefd"
+          VALE_VERSION: "3.21.0"
+          VALE_SHA256: "96997d19a4ca6981673b0d4c5ca7f3ede4a9f97964a96edc29fba9e28a328336"
         run: |
           install_dir="$(mktemp -d)"
           tarball="${install_dir}/vale.tar.gz"
