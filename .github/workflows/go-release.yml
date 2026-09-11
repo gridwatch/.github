@@ -61,10 +61,11 @@ on:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
-      # Contents write on gridwatch/homebrew-tap and gridwatch/scoop-bucket and
-      # nothing else, read only by the goreleaser path when the config publishes
-      # a cask or a Scoop manifest. Optional: the `go build` path never reads it,
-      # and a goreleaser config that publishes neither artifact does not need it.
+      # Contents and Pull requests write on gridwatch/homebrew-tap and
+      # gridwatch/scoop-bucket and nothing else, read only by the goreleaser path:
+      # it pushes a cask or Scoop manifest to a per-release branch and opens a PR,
+      # since main there takes no direct push. Optional: the `go build` path never
+      # reads it, and a config that publishes neither artifact does not need it.
       PACKAGE_REPO_TOKEN:
         required: false
 
