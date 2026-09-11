@@ -26,8 +26,15 @@ on:
 # burst-push shape that triggers it (this repo's own apply pushing several
 # `github_repository_file` commits back-to-back) reaches every repo the fleet
 # manages, Node ones included.
+#
+# The caller's workflow name is in the group too. Inside a called workflow the
+# `github` context is the caller's, so without it two callers in one repo — Test
+# and signpost's Deploy, both on every push to main — computed the same group
+# and cancelled each other, and a cancelled Deploy test skips the deploy. With
+# it, superseded runs of one workflow still collapse; different workflows
+# no longer do.
 concurrency:
-  group: ${{ github.repository }}-test-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
