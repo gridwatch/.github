@@ -32,12 +32,8 @@ on:
         type: string
         default: '.'
     secrets:
-      # Optional so this workflow also serves public repositories. A pull
-      # request from a fork receives no secrets at all, so a required secret
-      # would fail the run before a step executed. The lint config comes from
-      # the public `.github` repository precisely so linting never depends on
-      # a credential; only private sibling checkouts do, guarded on the
-      # minted token being non-empty.
+      # Optional so public repos and fork pull requests, which receive no
+      # secrets, still run; only private sibling checkouts need the token.
       REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -50,8 +46,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
@@ -61,15 +56,11 @@ jobs:
           persist-credentials: false
 
       # The shared golangci config lives in the public `.github` repository, so
-      # this clone needs no credentials and works identically for a public
-      # caller and for a fork's pull request. It is the only checkout the lint
-      # job cannot do without.
+      # this clone needs no credentials and works for public and fork callers.
       - name: Checkout lint config
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
-      # Mints a per-run installation token for the private gridwatch Go
-      # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation.
+      # Mints a per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -104,14 +95,9 @@ jobs:
         with:
           go-version-file: ${{ inputs.working-directory }}/go.mod
 
-      # go.mod requirements for gridwatch modules resolve straight from GitHub:
-      # GOPRIVATE keeps them away from the public proxy and checksum database,
-      # which cannot see a private repo, and the rewrite gives git the token it
-      # needs to fetch them.
-      # Skipped without a token: the rewrite would otherwise install
-      # `x-access-token:@github.com` as the credential for every gridwatch
-      # fetch, turning a would-be anonymous clone of a public module into an
-      # authentication failure.
+      # GOPRIVATE keeps gridwatch modules off the public proxy and checksum
+      # database; the rewrite gives git the token. Skipped without one, or an
+      # empty credential turns a public module's anonymous clone into a 401.
       - name: Configure private module access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -124,20 +110,18 @@ jobs:
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
-      # The command goes through the environment rather than being interpolated
-      # into the script, so its text cannot be parsed as part of it. The nested
-      # shell needs `-e` restated: the default shell applies it to the outer
-      # script only, so without it a `cmd1; cmd2` setup command would continue
-      # past a failing `cmd1` and report only the last exit status.
+      # Via the environment, so the command's text is never parsed as script.
+      # `-e` is restated: the default shell applies it to the outer script only,
+      # so a `cmd1; cmd2` command would otherwise continue past a failing cmd1.
       - name: Run setup command
         if: inputs.setup-command != ''
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         run: bash -eo pipefail -c "$SETUP_COMMAND"
 
-      # `../fleet-config` is relative to the checkout root, so a relative
-      # --config breaks as soon as the linter runs anywhere else. Anchoring to
-      # github.workspace resolves to the same file from any working directory.
+      # `../fleet-config` is relative to the checkout root, so --config is
+      # anchored to github.workspace — a relative path breaks under any other
+      # working-directory.
       #
       # see: https://github.com/golangci/golangci-lint-action/releases/tag/v9.3.0
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
@@ -146,9 +130,8 @@ jobs:
           version: "v2.13.1"
           working-directory: ${{ inputs.working-directory }}
 
-      # golangci-lint reads the code; govulncheck reads what the code calls. Every
-      # repo's local `task lint-go` has run both, and CI ran only the first, so a
-      # vulnerable dependency passed CI and failed the next laptop that linted.
+      # golangci-lint reads the code; govulncheck reads what the code calls.
+      # Both run locally in `task lint-go`, so CI must run both too.
       #
       # see: https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck
       - name: Run govulncheck
