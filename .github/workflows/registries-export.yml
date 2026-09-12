@@ -6,17 +6,9 @@
 # Action pins live in its `locals.tf`. Never merge a Dependabot pull request
 # against this file; bump the pin there instead.
 
-# Reusable workflow that turns a CAPSTONE export push into a reviewable
-# pull request against gridwatch/registries.
-#
-# Triggered by the caller on push to `craft-export`: normalize the pushed
-# JSON to stable formatting, reconcile the tree against the export
-# manifest, then open or update a PR against main.
-#
-# Validation is deliberately NOT here. registries/.github/workflows/
-# fdt-validate.yml already runs `12b validate` on every pull request, so
-# opening one is what gates the content. Duplicating it would mean two
-# places to update whenever the validator moves.
+# Turns a CAPSTONE export push on `craft-export` into a pull request against
+# gridwatch/registries. Validation is deliberately not here: registries'
+# own fdt-validate.yml runs `12b validate` on the pull request this opens.
 
 name: Registries Export
 
@@ -44,12 +36,8 @@ jobs:
           ref: craft-export
           fetch-depth: 0
 
-      # Mints an installation token scoped to this repository, valid for
-      # about an hour. Needed because the automatic GITHUB_TOKEN cannot
-      # open pull requests: the org sets
-      # can_approve_pull_request_reviews = false, and that flag has no
-      # repository-scoped form. An App keeps the grant at one repository
-      # and leaves no long-lived credential at rest.
+      # An App token, because the automatic GITHUB_TOKEN cannot open pull
+      # requests here: the org sets can_approve_pull_request_reviews = false.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -110,26 +98,22 @@ jobs:
           git commit -am "chore: normalize exported JSON"
           git push
 
-      # Uses the App token, not GITHUB_TOKEN: opening a pull request is
-      # exactly what the automatic token is barred from doing here.
+      # The App token, not GITHUB_TOKEN: the automatic one cannot open the PR.
       - name: Open or update the pull request
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           # `gh pr list` exits 0 with empty output when nothing matches, so a
-          # real failure (auth, rate limit, API error) still trips `set -e`
-          # instead of being misread as "no pull request open" the way a
-          # stderr-suppressed `gh pr view` would.
+          # real failure still trips `set -e` rather than reading as "none open".
           existing="$(gh pr list --base main --head craft-export --state open \
             --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             echo "pull request #$existing already open - the push updated it"
             exit 0
           fi
-          # Body via heredoc, not an inline --body string: continuation lines
-          # of a quoted string keep this block's indentation as literal text,
-          # and a >=4-space indent renders as a code block on GitHub.
+          # Body via heredoc, not an inline --body: a quoted string's continuation
+          # lines keep this indentation, and >=4 spaces renders as a code block.
           gh pr create \
             --base main \
             --head craft-export \
