@@ -11,8 +11,7 @@ name: Vale
 on:
   workflow_call:
     inputs:
-      # Callers always pass this explicitly (see the caller template); the
-      # default only backstops a hand-written caller.
+      # Callers always pass this; the default only backstops a hand-written one.
       glob:
         description: "Vale --glob pattern selecting the files to lint"
         type: string
@@ -32,8 +31,7 @@ jobs:
   vale:
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
@@ -42,8 +40,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Mints a per-run installation token for the private repository
-      # read below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository read below.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -54,16 +51,9 @@ jobs:
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      # The shared config, styles directory and committed vocabularies live in
-      # the private tooling repository, and a repo-local .vale.ini points its
-      # StylesPath at ../tooling/vale/styles — so the clone lands as a sibling
-      # of the workspace, matching a developer's checkout layout.
-      #
-      # When the calling repository IS tooling, ../tooling resolves to the
-      # workspace itself (/home/runner/work/tooling/tooling), so the clone
-      # fails on a non-empty destination — and is unnecessary anyway: using
-      # the checkout means a tooling pull request lints against its own
-      # branch's config rather than main's.
+      # Cloned as a sibling because .vale.ini points its StylesPath at
+      # ../tooling. When the caller IS tooling, ../tooling is the workspace
+      # itself: use the checkout, or the clone fails on a non-empty destination.
       - name: Checkout tooling
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -87,11 +77,9 @@ jobs:
           tar -xzf "${tarball}" -C "${install_dir}/bin" vale
           echo "${install_dir}/bin" >> "${GITHUB_PATH}"
 
-      # A repo with its own .vale.ini lints against it; everything else uses
-      # the shared config — the same resolution a developer's
-      # `task lint-prose` performs via VALE_CONFIG. `vale sync` downloads the
-      # Microsoft and alex packages into the StylesPath, which is gitignored
-      # in tooling and so absent from the fresh clone.
+      # A repo with its own .vale.ini lints against it; everything else uses the
+      # shared config. `vale sync` fetches the style packages, gitignored in
+      # tooling and so absent from the fresh clone.
       - name: Run Vale
         env:
           VALE_GLOB: ${{ inputs.glob }}
