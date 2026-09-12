@@ -20,11 +20,9 @@ on:
         type: string
         default: '.'
 
-# SHA for pushes, ref for pull requests -- see the long note in
-# `terraform-superlinter.tftpl.yml`. A ref-keyed group lets runs for different
-# commits cancel each other, and GitHub does not create them in commit order, so
-# a burst of pushes can leave a branch tip holding `cancelled` checks. This
-# workflow was the second casualty of exactly that on `terraform-cloudflare-r2`.
+# SHA for pushes, ref for pull requests: a ref-keyed group lets runs for
+# different commits cancel each other, and a burst of pushes can then leave a
+# branch tip holding `cancelled` checks.
 concurrency:
   group: ${{ github.repository }}-terraform-docs-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
@@ -48,7 +46,6 @@ jobs:
         with:
           config-file: .terraform-docs.yml
           fail-on-diff: true
-          # The action runs from the workspace root and prefers a config that
-          # exists there, so one root `.terraform-docs.yml` serves every entry
-          # and no per-directory copy is needed.
+          # The action runs from the workspace root and prefers a config there,
+          # so one root `.terraform-docs.yml` serves every entry.
           working-dir: ${{ inputs.working-dir }}
