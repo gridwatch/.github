@@ -30,8 +30,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
@@ -40,8 +39,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository reads below.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -72,9 +70,8 @@ jobs:
           chmod +x "${install_dir}/bin/swiftlint"
           echo "${install_dir}/bin" >> "${GITHUB_PATH}"
 
-      # Test directories lint against swiftlint-tests.yml (relaxed rules for
-      # idiomatic test patterns like force unwrapping); everything else uses
-      # the main config. A path is treated as tests when it contains "Tests".
+      # A path containing "Tests" lints against swiftlint-tests.yml (relaxed
+      # rules for idiomatic test patterns); everything else uses the main config.
       - name: Run SwiftLint
         env:
           LINT_PATHS: ${{ inputs.paths }}
