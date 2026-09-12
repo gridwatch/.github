@@ -40,11 +40,8 @@ on:
         type: string
         default: ''
     secrets:
-      # Optional so this workflow also serves public repositories. A pull
-      # request from a fork receives no secrets at all, so a required secret
-      # would fail the run before a step executed. Every step that needs the
-      # minted token is guarded on it being non-empty; a caller with private
-      # siblings, assets or registries still has to supply the App halves.
+      # Optional so forks and public repos still run — a fork PR receives no
+      # secrets. Every step needing the token is guarded on it being set.
       REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -57,8 +54,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's `if` can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
@@ -67,9 +63,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Mints a per-run installation token for the private gridwatch Go
-      # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation.
+      # Per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -87,10 +81,8 @@ jobs:
           CLONE_REGISTRIES: ${{ inputs.clone-registries }}
           SIBLING_MODULES: ${{ inputs.sibling-modules }}
         run: |
-          # Every clone below is of a private repository, so all of it is
-          # skipped without a token. A public caller reaches none of it: it has
-          # no private siblings by definition. Note that a caller-provided
-          # setup-command may still expect these sibling checkouts to exist.
+          # All private clones, so skipped without a token — a caller's
+          # setup-command may still expect these checkouts to exist.
           if [ -z "${GH_TOKEN}" ]; then
             echo "no repo-access App token; skipping private sibling checkouts"
             exit 0
@@ -111,14 +103,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # go.mod requirements for gridwatch modules resolve straight from GitHub:
-      # GOPRIVATE keeps them away from the public proxy and checksum database,
-      # which cannot see a private repo, and the rewrite gives git the token it
-      # needs to fetch them.
-      # Skipped without a token: the rewrite would otherwise install
-      # `x-access-token:@github.com` as the credential for every gridwatch
-      # fetch, turning a would-be anonymous clone of a public module into an
-      # authentication failure.
+      # GOPRIVATE keeps gridwatch modules off the public proxy and checksum db.
+      # Skipped without a token: the rewrite would break anonymous public fetches.
       - name: Configure private module access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -131,26 +117,16 @@ jobs:
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
-      # The command goes through the environment rather than being interpolated
-      # into the script, so its text cannot be parsed as part of it. The nested
-      # shell needs `-e` restated: the default shell applies it to the outer
-      # script only, so without it a `cmd1; cmd2` setup command would continue
-      # past a failing `cmd1` and report only the last exit status.
+      # Via the environment so the command text cannot be parsed as script.
+      # `-e` is restated: the default shell applies it to the outer script only.
       - name: Run setup command
         if: inputs.setup-command != ''
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         run: bash -eo pipefail -c "$SETUP_COMMAND"
 
-      # `docker run` rather than a job-level `services:` block, because
-      # services cannot be made conditional: every Go repo in the fleet would
-      # pay the image pull for a database only one of them uses. A repo that
-      # leaves `postgres-image` empty skips this step entirely.
-      #
-      # The image is an input rather than a constant because the extensions
-      # matter — a repo whose migrations create `vector` or `postgis` needs an
-      # image that ships them, and stock `postgres` fails on the first
-      # migration rather than at startup, where it would be obvious.
+      # `docker run` rather than `services:`, which cannot be made conditional.
+      # Image is an input: stock `postgres` fails a `vector`/`postgis` migration.
       - name: Start Postgres
         if: inputs.postgres-image != ''
         env:
@@ -160,8 +136,7 @@ jobs:
           docker run -d --name ci-postgres -p 5432:5432 \
             -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
             "${POSTGRES_IMAGE}"
-          # pg_isready inside the container: it reports the server accepting
-          # connections, which a port check on the host does not.
+          # pg_isready in the container: a host port check does not prove ready.
           for _ in $(seq 60); do
             if docker exec ci-postgres pg_isready -U test -q; then exit 0; fi
             sleep 1
@@ -170,10 +145,8 @@ jobs:
           docker logs ci-postgres
           exit 1
 
-      # The URL is exported under a repo-chosen name rather than a fixed one:
-      # these suites skip when their variable is unset, and a repo that names
-      # it differently would silently skip every database test while still
-      # reporting the package as passing.
+      # Repo-chosen variable name: these suites skip when it is unset, so a
+      # mismatch silently skips every database test and still reports passing.
       - name: Run tests
         env:
           DATABASE_URL_ENV: ${{ inputs.database-url-env }}
@@ -189,17 +162,12 @@ jobs:
           fi
           go test -race -count=1 -coverprofile=coverage.out ./...
 
-      # Opt-in per repo. A repo that has not set a threshold keeps the
-      # previous behaviour exactly: tests run, coverage is measured but
-      # nothing is enforced.
       - name: Enforce coverage threshold
         if: inputs.coverage-threshold > 0
         env:
           COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
         run: |
-          # pipefail matters here: the total is read through a
-          # `go tool cover | awk | tr` pipeline, and without it a failure
-          # in the first command is masked by tr succeeding.
+          # pipefail: without it a failing `go tool cover` is masked by `tr`.
           set -euo pipefail
 
           total="$(go tool cover -func=coverage.out | awk '/^total:/ { print $3 }' | tr -d '%')"
@@ -209,10 +177,8 @@ jobs:
           fi
           echo "total statement coverage: ${total}% (threshold ${COVERAGE_THRESHOLD}%)"
 
-          # awk rather than $(( )): shell arithmetic is integer-only, and
-          # bash and dash both *error* on a fractional operand rather than
-          # truncating it, so the comparison could not be written that way
-          # at all. awk compares in floating point.
+          # awk, not $(( )): shell arithmetic is integer-only and errors on a
+          # fractional operand rather than truncating it.
           awk -v got="${total}" -v want="${COVERAGE_THRESHOLD}" \
             'BEGIN { if (got + 0 < want + 0) { exit 1 } }' \
             || {
