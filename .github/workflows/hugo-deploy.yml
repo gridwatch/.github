@@ -48,10 +48,8 @@ jobs:
       - name: Build
         run: hugo
 
-      # wrangler-action executes `command` via @actions/exec (direct spawn,
-      # no shell), so the interpolated branch name cannot trigger command
-      # injection; this guard pins a safe charset so that property doesn't
-      # silently depend on the action's internals.
+      # wrangler-action spawns `command` directly (no shell), so the branch name
+      # cannot inject; this guard pins the charset rather than trusting that.
       - name: Validate deploy branch name
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
