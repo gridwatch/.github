@@ -11,23 +11,8 @@ name: Prose Super-Linter
 on:
   workflow_call:
     inputs:
-      # Both are accepted and IGNORED. Markdown, YAML and Bash are linted in
-      # every caller, unconditionally.
-      #
-      # They never did anything. The caller template emits an input only when it
-      # is true, so a `false` in local.superlinter_prose_repos was never passed
-      # and the `true` default applied regardless: `assets` declared
-      # validate_yaml = false and had its YAML linted for as long as the setting
-      # existed, as did `database-schemas` and `sector-website`.
-      #
-      # Nor can they be made to work. Super-Linter rejects any run that mixes
-      # VALIDATE=true and VALIDATE=false, fatally, at config validation and
-      # before a file is read, so honouring a `false` here would disable every
-      # linter in that repo. That is exactly what #127's validate-json did to all
-      # eight prose callers, and why #131 removed it rather than defaulting it.
-      #
-      # Kept declared, not deleted, so a caller that still passes one mid-apply
-      # does not startup_failure. Drop them once no caller does.
+      # Accepted and IGNORED: Super-Linter fatally rejects a run mixing VALIDATE
+      # true and false, so a `false` here would disable every linter in the repo.
       validate-yaml:
         description: 'Ignored - YAML is always validated'
         type: boolean
@@ -44,13 +29,8 @@ on:
         description: 'Copy yamllint.yml from tooling into workspace'
         type: boolean
         default: false
-      # Which markdownlint config in the shared `.github` repository to copy in.
-      # The fleet config assumes a standalone markdown document: it forbids
-      # inline HTML, requires headings to increment by one from an h1 in the
-      # file, and rejects a repeated heading. Hugo page content satisfies none
-      # of those — the title lives in front matter, sections repeat per
-      # component, and a design system documents itself with embedded SVG. Such
-      # a repo names a config written for that shape instead.
+      # The fleet config assumes a standalone document (no inline HTML, one h1,
+      # no repeated headings); Hugo content repos name a config for that shape.
       markdown-config:
         description: 'markdownlint config filename in gridwatch/.github'
         type: string
@@ -70,20 +50,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # The shared Super-Linter configs live in the public `.github` repository,
-      # so this clone needs no credentials and behaves identically for a private
-      # caller, a public one, and a fork's pull request. It clones the config repo
-      # outside the workspace so Super-Linter does not lint the cloned checkout.
-      # Cloned outside the workspace, and checked out with git rather than
-      # actions/checkout, for one reason: Super-Linter v8 resolves DEFAULT_BRANCH
-      # with git against its own working directory, which is always the mounted
-      # workspace root — not DEFAULT_WORKSPACE, which only scopes file
-      # discovery. Checking the caller out to a subdirectory therefore leaves the
-      # workspace root without a .git and the run dies with "Neither main, nor
-      # origin/main exist in /github/workspace" before linting anything. So the
-      # caller must stay at the workspace root, which leaves nowhere inside the
-      # workspace to put the configs without linting them, which is why they land
-      # outside it and are copied in.
+      # Cloned outside the workspace and copied in: Super-Linter v8 resolves
+      # DEFAULT_BRANCH with git at the workspace root, so the caller must stay
+      # there — and a config checked out inside it would be linted.
       - name: Checkout linter configs
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
@@ -108,15 +77,8 @@ jobs:
           VALIDATE_BASH: true
           VALIDATE_BASH_EXEC: true
 
-          # Super-Linter v8 auto-discovery doesn't pick up the files the copy
-          # step above writes into .github/linters/ — without these the configs
-          # are written and then ignored, and the run silently falls back to
-          # Super-Linter's bundled defaults. The terraform-superlinter reusable
-          # already sets both for the same reason.
-          #
-          # YAML_CONFIG_FILE falls back to Super-Linter's own default filename
-          # when the repo opted out of copy-yamllint-config, so pointing at it
-          # unconditionally can't reference a file that was never written.
+          # Named explicitly: v8 auto-discovery does not see the files the copy
+          # step writes, and the run silently uses the bundled defaults instead.
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
           YAML_CONFIG_FILE: ${{ inputs.copy-yamllint-config && '.yamllint.yml' || '.yaml-lint.yml' }}
 
