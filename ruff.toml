@@ -1,0 +1,58 @@
+# Fleet ruff configuration — the single source of truth for Python linting,
+# the way golangci.yml is for Go. Rendered by infrastructure-github into both
+# the public `.github` repository (cloned by CI) and `tooling` (read locally
+# by `task lint-python`); editing either copy is pointless, the next apply
+# overwrites it. Change templates/config/ruff.tftpl.toml instead.
+
+# Wider than ruff's own 88. docling-worker, the fleet's only Python service,
+# is hand-wrapped near 88 with a handful of lines reaching 99; at 88 those
+# would be 18 E501 failures on working code, and narrowing them is churn with
+# no reader benefit.
+line-length = 100
+
+# The oldest interpreter any first-party Python has to run on: the
+# docling-worker image is Ubuntu 22.04, whose python3 is 3.10. Pinning it here
+# is what makes a 3.11-only construct fail the lint rather than the container.
+target-version = "py310"
+
+[lint]
+# An allowlist, like golangci.yml's. Each family earns its place:
+#   E, W, F  pycodestyle + pyflakes — the baseline every linter agrees on.
+#   I        import sorting, so a merge conflict in an import block is real.
+#   UP       syntax the pinned target-version makes available.
+#   B, BLE   bugbear, and blind `except Exception` — this fleet's Python
+#            deliberately swallows exceptions in a couple of places, and BLE
+#            is what makes those a documented `noqa` rather than a habit.
+#   C4, SIM  comprehension and control-flow simplifications.
+#   DTZ      naive datetimes. Timestamps here are written to a durable
+#            manifest and compared across runs; a naive one is a silent bug.
+#   S        bandit. docling-worker ingests untrusted documents.
+#   N, A     pep8 naming, and shadowed builtins.
+#   PT       pytest style, so the suites stay uniform.
+#   PTH      pathlib over os.path.
+#   RUF      ruff's own rules, including RUF100 — a `noqa` that suppresses
+#            nothing is indistinguishable from one hiding a real finding.
+select = [
+  "A",
+  "B",
+  "BLE",
+  "C4",
+  "DTZ",
+  "E",
+  "F",
+  "I",
+  "N",
+  "PT",
+  "PTH",
+  "RUF",
+  "S",
+  "SIM",
+  "UP",
+  "W",
+]
+
+[lint.per-file-ignores]
+# `assert` is how a test states its expectation; S101 is aimed at production
+# code relying on asserts that `python -O` strips.
+"**/tests/**" = ["S101"]
+"**/conftest.py" = ["S101"]
