@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Runner's own Xcode toolchain. Installing an open-source one cost 61s of
-      # a 195s job for nothing: Package.swift asks for swift-tools-version 6.2.
+      # The runner's own Xcode toolchain — Package.swift asks for
+      # swift-tools-version 6.2, so an open-source install buys nothing.
       - name: Run tests
         run: swift test
