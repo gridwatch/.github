@@ -1,0 +1,121 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+#
+# Lint and test in one job, like `node-test.yml` and unlike the Go pair: the
+# whole cost of a Python job is building the virtualenv, and splitting it in
+# two would pay that twice to gain nothing but a second check name.
+#
+# `ruff format` is deliberately not run. The fleet's Python predates the shared
+# ruff config and is hand-wrapped narrower than its `line-length`, so the
+# formatter would reflow working code on its first run. Adopting it is a change
+# worth making on its own, not one to smuggle in through a CI file.
+
+name: Python Test
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: >-
+          Interpreter to test against. This is the OLDEST version the code has
+          to run on, not the newest it tolerates — for a containerised service
+          it is whatever the image ships, or CI passes code the container
+          rejects. A string, never a number: bare 3.10 is the float 3.1.
+        type: string
+        required: true
+      requirements:
+        description: 'Requirements file holding the test dependencies'
+        type: string
+        default: 'requirements-dev.txt'
+      coverage-package:
+        description: >-
+          Package to measure coverage of. Empty runs the tests without
+          coverage. No threshold is enforced — the report is written to the job
+          summary for a human to read.
+        type: string
+        default: ''
+
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks. The caller's workflow name is in the
+# group too, or two callers in one repo cancel each other.
+concurrency:
+  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The shared ruff config lives in the public `.github` repository, so
+      # this clone needs no credentials and works for public and fork callers.
+      # Outside the workspace, so ruff never lints the config repository.
+      - name: Checkout lint config
+        run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
+
+      # see: https://github.com/actions/setup-python/releases/tag/v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements }}
+
+      # ruff is installed from a pin here rather than through a third-party
+      # action, so the version CI lints with is the one `locals.tf` names and
+      # nothing else enters the supply chain to get it.
+      - name: Install dependencies
+        env:
+          REQUIREMENTS: ${{ inputs.requirements }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r "${REQUIREMENTS}"
+          python -m pip install "ruff==0.16.7"
+
+      # Anchored to github.workspace: `../fleet-config` is relative to the
+      # checkout root, and a bare relative path breaks under any other
+      # working directory.
+      - name: Lint
+        run: ruff check --config "${{ github.workspace }}/../fleet-config/ruff.toml" .
+
+      - name: Run tests
+        env:
+          COVERAGE_PACKAGE: ${{ inputs.coverage-package }}
+        run: |
+          set -euo pipefail
+          if [ -n "${COVERAGE_PACKAGE}" ]; then
+            python -m pytest --cov="${COVERAGE_PACKAGE}" --cov-report=term-missing
+          else
+            python -m pytest
+          fi
+
+      # Reported, never gated. docling-worker's uncovered lines are the Azure
+      # SDK and Docling adapters, which need a live backend and a GPU; a
+      # threshold over them would measure the wrong thing.
+      - name: Coverage summary
+        if: inputs.coverage-package != '' && always()
+        run: |
+          set -euo pipefail
+          if [ ! -f .coverage ]; then
+            echo "## Test Coverage" >> "$GITHUB_STEP_SUMMARY"
+            echo "Coverage report not available." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Test Coverage"
+            echo
+            python -m coverage report --format=markdown
+          } >> "$GITHUB_STEP_SUMMARY"
