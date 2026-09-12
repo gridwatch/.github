@@ -8,9 +8,8 @@
 
 name: Go Release
 
-# Builds the binaries for a tagged commit and publishes them as a GitHub
-# release. Triggered by the caller on a `v*` tag push, so the tag is the
-# release: nothing here decides what to publish, it only reacts.
+# Builds a tagged commit and publishes it as a GitHub release. The caller
+# triggers on a `v*` tag push; nothing here decides what to publish.
 
 on:
   workflow_call:
@@ -54,18 +53,14 @@ on:
         type: boolean
         default: false
     secrets:
-      # The repo-access App halves, minted below into a per-run token for
-      # fetching the private gridwatch Go modules. Optional so public and
-      # fork callers still run.
+      # The repo-access App halves, minted below into a per-run token for the
+      # private gridwatch Go modules. Optional so forks and public callers run.
       REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
-      # Contents and Pull requests write on gridwatch/homebrew-tap and
-      # gridwatch/scoop-bucket and nothing else, read only by the goreleaser path:
-      # it pushes a cask or Scoop manifest to a per-release branch and opens a PR,
-      # since main there takes no direct push. Optional: the `go build` path never
-      # reads it, and a config that publishes neither artifact does not need it.
+      # Contents + PRs write on gridwatch/homebrew-tap and scoop-bucket only,
+      # read solely by the goreleaser path. Optional: `go build` never reads it.
       PACKAGE_REPO_TOKEN:
         required: false
 
@@ -76,25 +71,20 @@ jobs:
   release:
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's `if` can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     permissions:
-      # Creating the release and uploading its assets.
       contents: write
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          # The version stamp prefers an exact tag on HEAD, and
           # `git describe` cannot see tags in a shallow clone.
           fetch-depth: 0
 
-      # Mints a per-run installation token for the private gridwatch Go
-      # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation.
+      # Per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -125,10 +115,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # go.mod requirements for gridwatch modules resolve straight from GitHub:
-      # GOPRIVATE keeps them away from the public proxy and checksum database,
-      # which cannot see a private repo, and the rewrite gives git the token it
-      # needs to fetch them.
+      # GOPRIVATE keeps gridwatch modules off the public proxy and checksum db;
+      # the rewrite gives git the token it needs to fetch them.
       - name: Configure private module access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -137,8 +125,7 @@ jobs:
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
-      # install-only: the build and publish are separate steps below, so the
-      # stamp check can sit between them.
+      # install-only: the stamp check sits between build and publish.
       #
       # see: https://github.com/goreleaser/goreleaser-action/releases/tag/v7.2.3
       - name: Install goreleaser
@@ -149,8 +136,8 @@ jobs:
           version: '~> v2'
           install-only: true
 
-      # `build` writes the same dist/ layout `release` will, without touching
-      # GitHub, which is what lets the stamp be checked before publishing.
+      # `build` writes the dist/ layout `release` will, without touching GitHub,
+      # so the stamp can be checked before publishing.
       - name: Build with goreleaser
         if: ${{ inputs.goreleaser }}
         run: goreleaser build --clean
@@ -178,14 +165,12 @@ jobs:
             out="dist/${BINARY_NAME}_${VERSION}_${goos}_${goarch}"
 
             echo "building ${goos}/${goarch}"
-            # CGO off so every target cross-compiles from this runner and
-            # the result carries no host libc dependency.
+            # CGO off so every target cross-compiles with no host libc dependency.
             CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
               go build -trimpath -ldflags "${ldflags}" -o "${out}" "${MAIN_PACKAGE}"
           done
 
-          # Checksums are generated from inside dist/ so the file records
-          # bare names, which is what `shasum -c` expects to find beside it.
+          # Generated inside dist/ so the file records bare names for `shasum -c`.
           cd dist
           sha256sum ./* > "${BINARY_NAME}_${VERSION}_SHA256SUMS"
 
@@ -198,11 +183,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GORELEASER}" = "true" ]; then
-            # The configs stamp {{ .Tag }}, and grepping for the tag without
-            # its `v` matches that too. The ldflags live in the repo's config
-            # rather than in version-var, so
-            # the check is unconditional here: a config that forgets to stamp
-            # fails the release rather than shipping a dev build.
+            # Grepping for the tag without its `v` matches the config's stamp.
+            # Unconditional: a config that forgets to stamp fails the release.
             stamp="${VERSION#v}"
             checked=0
             while IFS= read -r binary; do
@@ -225,13 +207,8 @@ jobs:
             exit 0
           fi
 
-          # A silently unstamped release is the failure this whole input
-          # exists to prevent, so prove it landed before publishing.
-          #
-          # Check every artifact rather than one assumed target: the
-          # caller can override `platforms`, and a check hard-coded to
-          # linux/amd64 would fail a release that never asked for it —
-          # while also saying nothing about the platforms it did build.
+          # Prove the stamp landed before publishing, across every artifact:
+          # `platforms` is caller-overridable, so a hard-coded target lies.
           checked=0
           for binary in dist/"${BINARY_NAME}"_"${VERSION}"_*; do
             case "${binary}" in
@@ -250,10 +227,8 @@ jobs:
           fi
           echo "stamp verified in ${checked} binaries"
 
-      # `release --clean` rebuilds what `build` just produced: goreleaser has
-      # no way to publish an existing dist/, and a second build is cheaper
-      # than a release that was never checked. The tag is the one HEAD sits
-      # on, so as with --verify-tag below nothing is invented.
+      # `release --clean` rebuilds what `build` produced: goreleaser cannot
+      # publish an existing dist/.
       - name: Publish with goreleaser
         if: ${{ inputs.goreleaser }}
         env:
@@ -268,8 +243,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # --verify-tag: refuse to invent a tag if the ref went away
-          # between the push and this job.
+          # --verify-tag: refuse to invent a tag if the ref went away.
           gh release create "${VERSION}" \
             --repo "${{ github.repository }}" \
             --title "${VERSION}" \
