@@ -8,19 +8,9 @@
 
 name: Validate Data Feeds
 
-# Runs `12b feeds validate` against the calling repo's working tree, checking
-# each <section>.csv against the Craft field definitions in the
-# <section>.schema.json beside it.
-#
-# This is separate from the prose Super-Linter because Super-Linter ships no CSV
-# linter at all — v8 has no VALIDATE_CSV and no csvlint in the image — so the CSV
-# content of world-data and sim-data is unreachable through that path.
-#
-# Shaped after gridwatch/registries' fdt-validate.yml, which runs the sibling
-# `12b validate` the same way: check twelve-bravo out alongside the tree under
-# test and `go run` it, rather than building and caching a binary. The validator
-# is sub-second on the live feeds, so that keeps the workflow surface minimal —
-# no artifact handling, no cache keys.
+# Checks each <section>.csv against the <section>.schema.json beside it.
+# Separate from the prose Super-Linter because Super-Linter v8 ships no CSV
+# linter at all, leaving world-data and sim-data unreachable through that path.
 
 on:
   workflow_call:
@@ -53,8 +43,7 @@ jobs:
     name: validate
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
@@ -68,13 +57,11 @@ jobs:
           path: feeds
           persist-credentials: false
 
-      # Pinned to a commit SHA rather than main, so a twelve-bravo merge cannot
-      # silently change what this gate accepts. Bumping it is an explicit,
-      # reviewable change to twelve_bravo_ref in infrastructure-github.
+      # twelve-bravo is checked out at a pinned SHA below, so a merge there
+      # cannot silently change what this gate accepts.
       #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository reads below.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
