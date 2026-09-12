@@ -34,8 +34,7 @@ jobs:
   test:
     runs-on: macos-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     timeout-minutes: 60
@@ -45,8 +44,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository reads below.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -64,9 +62,8 @@ jobs:
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
 
-      # Deliberately NO open-source-toolchain install here: forcing TOOLCHAINS=swift makes
-      # SPM manifest compilation fail on the runner (posix_spawn linker errors) — the runner
-      # Xcode's own bundled Swift is the standard, working toolchain for xcodebuild.
+      # No open-source-toolchain install: forcing TOOLCHAINS=swift breaks SPM
+      # manifest compilation on the runner (posix_spawn linker errors).
       - name: Install XcodeGen
         env:
           XCODEGEN_VERSION: "2.46.0"
@@ -114,9 +111,8 @@ jobs:
           SCHEME: ${{ inputs.scheme }}
           GIT_TERMINAL_PROMPT: '0'
         run: |
-          # Code signing is disabled for CI: a test run needs no signed product, and an app
-          # with entitlements (iCloud, etc.) would otherwise demand a provisioning profile
-          # the runner cannot mint non-interactively.
+          # Code signing off: a test needs no signed product, and entitlements would
+          # demand a provisioning profile the runner cannot mint non-interactively.
           xcodebuild -project "${PROJECT}" \
             -scheme "${SCHEME}" \
             -destination 'platform=macOS' \
