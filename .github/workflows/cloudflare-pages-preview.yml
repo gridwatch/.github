@@ -6,19 +6,9 @@
 # Action pins live in its `locals.tf`. Never merge a Dependabot pull request
 # against this file; bump the pin there instead.
 
-# Reusable workflow that builds a Hugo site and publishes it to a Cloudflare
-# Pages *preview* deployment for the pull request's head branch.
-#
-# Split from hugo-deploy.yml deliberately: that one is the production deploy
-# and now runs on push to main only. Cloudflare Pages treats any
-# `--branch` other than the project's production branch as a preview, so both
-# workflows would otherwise race to publish the same PR — two deployments per
-# PR, one of which wins arbitrarily. Keeping them apart means "Deploy" on a PR
-# always means production and "Cloudflare Pages Preview" always means preview.
-#
-# The preview URL is surfaced on the job summary and as the GitHub deployment
-# environment URL, so reviewers get a link without opening the Cloudflare
-# dashboard.
+# Builds a Hugo site and publishes a Cloudflare Pages *preview* for the pull
+# request's head branch. Kept apart from hugo-deploy.yml (push to main only),
+# or both would race to publish the same pull request and one would win at random.
 
 name: Cloudflare Pages Preview
 
@@ -65,10 +55,8 @@ jobs:
       - name: Build
         run: hugo
 
-      # wrangler-action executes `command` via @actions/exec (direct spawn,
-      # no shell), so the interpolated branch name cannot trigger command
-      # injection; this guard pins a safe charset so that property doesn't
-      # silently depend on the action's internals.
+      # wrangler-action spawns `command` directly (no shell), so the branch name
+      # cannot inject; this guard pins the charset rather than trusting that.
       - name: Validate preview branch name
         env:
           BRANCH: ${{ github.head_ref }}
@@ -88,9 +76,8 @@ jobs:
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           command: pages deploy public --project-name="${{ inputs.project-name }}" --branch="${{ github.head_ref }}"
 
-      # Every value below goes through `env:` rather than inline `${{ }}`:
-      # `github.head_ref` is attacker-controlled on a fork PR, and inline
-      # interpolation would splice it into the shell.
+      # Values go through `env:` rather than inline interpolation:
+      # `github.head_ref` is attacker-controlled on a fork pull request.
       - name: Summarise
         env:
           BRANCH: ${{ github.head_ref }}
