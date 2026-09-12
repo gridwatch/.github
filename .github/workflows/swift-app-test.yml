@@ -38,13 +38,11 @@ jobs:
   test:
     runs-on: macos-26
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
-    # A cap so a wedged step can never burn the full 6h default. Kept above the
-    # step caps so the cache post-step still fits. The step caps, not this one,
-    # are what make a stall fail fast.
+    # A cap so a wedged step can never burn the full 6h default; the step caps,
+    # not this one, are what make a stall fail fast.
     timeout-minutes: 60
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -52,8 +50,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository reads.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -86,13 +83,9 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # xcodegen writes a fresh .xcodeproj and .xcodeproj is gitignored, so the
-      # resolved-versions file inside it does not survive generation. Without
-      # seeding the committed lockfile back in, every CI run re-resolves the
-      # version ranges in project.yml and a new upstream release can change what
-      # is built with no commit in this repo. Mirrors the `generate` task in
-      # tooling/taskfiles/swift.yml so local and CI resolve identically.
-      # No-op for apps that have not committed a lockfile.
+      # xcodegen writes a fresh .xcodeproj, so without re-seeding the committed
+      # lockfile every run re-resolves the ranges in project.yml and upstream
+      # can change what is built with no commit here. Mirrors `task generate`.
       - name: Seed committed package pins
         env:
           PROJECT: ${{ inputs.project }}
@@ -102,28 +95,16 @@ jobs:
             mkdir -p "${dir}"
             cp Package.resolved "${dir}/Package.resolved"
             echo "seeded pins:"
-            # `|| true` because this is logging. The runner default shell is
-            # `bash -e {0}` with no pipefail, so a grep miss would currently
-            # surface as sed's exit status and pass anyway — but that is an
-            # accident of the default. Should a `defaults.run.shell: bash` ever
-            # be set (which adds pipefail), an unmatched grep would fail package
-            # resolution over a cosmetic summary.
+            # `|| true` because this is logging: under pipefail a grep miss
+            # would otherwise fail package resolution over a cosmetic summary.
             grep -E '"(identity|version)"' Package.resolved | paste - - | sed 's/^/  /' || true
           else
             echo "no committed Package.resolved — resolving from project.yml ranges"
           fi
 
-      # Keyed on both inputs that determine what gets resolved: project.yml
-      # (which packages, and the permitted ranges) and Package.resolved (the
-      # exact versions inside those ranges). Keying on project.yml alone would
-      # serve a stale cache after a pin bump. Keyed per-repo so apps with
-      # different dependency sets don't share.
-      #
-      # Restore/save split rather than the combined action so the save condition
-      # is explicit. It must stay success-only: a cache written by a killed
-      # resolve contains repositories/ and checkouts/ but no artifacts/, and
-      # restoring that just reproduces the stall with nothing left to print,
-      # which is what made the stall look cache-independent for so long.
+      # Keyed on project.yml and Package.resolved: on project.yml alone a pin
+      # bump would serve a stale cache. The save below must stay success-only —
+      # a cache from a killed resolve has no artifacts/ and reproduces the stall.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Restore cached Swift packages
         id: spm-cache
@@ -134,25 +115,9 @@ jobs:
           restore-keys: |
             spm-${{ runner.os }}-${{ github.repository }}-
 
-      # Resolution is its own step so a stall is attributable and bounded,
-      # rather than silently hanging inside the test step.
-      #
-      # `-packageAuthorizationProvider netrc` is load-bearing, not tidying.
-      # Before an HTTP binary-artifact download SwiftPM asks its credential
-      # store for the host; the default store includes the macOS Keychain, and
-      # on a headless runner securityd has no session to unlock the login
-      # keychain, so SecItemCopyMatching blocks on mach_msg and never returns.
-      # Sampling a stalled xcodebuild showed 100% of samples parked in
-      # BinaryArtifactsManager.download -> KeychainAuthorizationProvider ->
-      # SecItemCopyMatching -> mach_msg2_trap. Selecting netrc drops the
-      # keychain provider. Only apps with a binaryTarget can hit this (git
-      # fetches use git's own credential path), which is why gridwatch stalled
-      # while ghost-grid and QRF stayed green on this very same file.
-      #
-      # GIT_TERMINAL_PROMPT=0 makes git fail rather than block on a credential
-      # prompt when there is no TTY — the same class of bug, different codepath.
-      #
-      # 10m cap: a cold resolve, artifact download included, is about a minute.
+      # `-packageAuthorizationProvider netrc` is required, not tidying: the
+      # default credential store blocks forever on the Keychain on a headless
+      # runner. GIT_TERMINAL_PROMPT=0 is the same hazard in git.
       - name: Resolve Swift packages
         timeout-minutes: 10
         env:
@@ -181,9 +146,8 @@ jobs:
             -packageAuthorizationProvider netrc \
             test
 
-      # Success-only (the default when no `always()`), so a half-written package
-      # directory from a failed run is never published. Skipped on an exact key
-      # hit, which would be a no-op.
+      # Success-only by default, so a failed run never publishes a half-written
+      # package directory. Skipped on an exact key hit.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - name: Save Swift package cache
         if: steps.spm-cache.outputs.cache-hit != 'true'
