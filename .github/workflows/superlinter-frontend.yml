@@ -8,10 +8,8 @@
 
 name: Frontend Super-Linter
 
-# JavaScript and CSS only. A separate reusable rather than more VALIDATE_* on
-# the prose one: Super-Linter refuses a run mixing true and false, so every
-# caller of one reusable gets every validator it names, and a repo with prose
-# and no scripts would fail on a linter with nothing to lint.
+# JavaScript and CSS only, in their own reusable: Super-Linter refuses a run
+# mixing true and false, so every caller gets every validator it names.
 on:
   workflow_call:
     inputs:
@@ -34,10 +32,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # The shared configs live in the public `.github` repository, cloned
-      # outside the workspace and copied in, for the reasons the prose reusable
-      # gives: the caller must sit at the workspace root, and a clone inside it
-      # would be linted.
+      # Cloned outside the workspace and copied in, as in the prose reusable:
+      # the caller must sit at the workspace root, and a clone inside is linted.
       - name: Checkout linter configs
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
