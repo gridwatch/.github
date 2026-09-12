@@ -6,33 +6,11 @@
 # Action pins live in its `locals.tf`. Never merge a Dependabot pull request
 # against this file; bump the pin there instead.
 
-# Reusable workflow that publishes data-feeds CSVs and schema.json files
-# to the CAPSTONE Craft webhook in a single POST.
+# Posts data-feeds CSVs and schema.json to the CAPSTONE Craft webhook, which
+# stages them to Azure Blob from inside the VNet (GHA cannot reach it).
 #
-# Architecture: Craft receives both schemas and CSVs via one
-# Cloudflare-Access-gated webhook, then stages the CSVs to its private
-# Azure data-feeds container (which Feed Me polls on its own schedule).
-# This sidesteps the "GHA-cannot-reach-private-storage" problem without
-# weakening the storage account's `public_network_access_enabled = false`
-# posture in infrastructure-capstone.
-#
-# Auth: Cloudflare Access service token (CF-Access-Client-Id /
-# CF-Access-Client-Secret headers). Token is provisioned in
-# infrastructure-capstone via cloudflare_zero_trust_access_service_token
-# and a path-scoped access policy on /feeds/*; the client ID + secret are
-# pushed onto the consumer repo as GHA secrets by infrastructure-github.
-#
-# Convention-matching call from the consumer repo (rendered by
-# infrastructure-github into .github/workflows/sync.yml):
-#
-#     jobs:
-#       sync:
-#         uses: gridwatch/tooling/.github/workflows/craftcms-data-feeds-sync.yml@main
-#         with:
-#           webhook-url: https://capstone.frontierdefensetech.com/feeds/sync
-#         secrets:
-#           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-#           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+# Consumers never write this call by hand: templates/callers/capstone-sync.tftpl.yml
+# renders it into each repo, and that file is the authoritative shape.
 
 name: CAPSTONE Data Feeds Sync
 
@@ -69,15 +47,8 @@ jobs:
           persist-credentials: false
 
       - name: Package feeds
-        # Bundle every *.csv and *.schema.json at the repo root. Craft's
-        # webhook controller extracts the archive, stages CSVs to Azure
-        # Blob (from inside the platform VNet, where the storage account
-        # is reachable), and runs the schema reconciler.
-        #
-        # Explicit `shell: bash` because this script uses `shopt -s
-        # nullglob`, bash arrays, and `[[ ... ]]` — all bash-specific.
-        # ubuntu-latest defaults to bash today, but pinning it here means
-        # the workflow keeps working if the runner default ever changes.
+        # `shell: bash` is explicit: this script needs `shopt -s nullglob`,
+        # bash arrays and `[[ ... ]]`.
         shell: bash
         run: |
           set -euo pipefail
@@ -98,23 +69,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Capture status, response headers, and body separately so any
-          # Q2 dropdown-conflict block (409) or other failure surfaces as
-          # a red workflow annotation on the merge commit with the failing
-          # section name in the response body.
-          #
-          # Response headers are captured too: a non-2xx can come from
-          # Cloudflare (Access denial, WAF / Bot Fight Mode) or from Craft
-          # itself, and the `server` / `cf-ray` / `cf-mitigated` /
-          # `cf-access-aud` headers are what tell the two apart.
-          #
-          # Content-Type is `application/octet-stream` rather than
-          # `application/gzip` or `application/x-tar` — the payload is
-          # both (a tar compressed with gzip), and the Craft webhook
-          # controller knows what to expect from the endpoint contract
-          # (`/feeds/sync` = gzip tarball of CSVs + schemas). The
-          # Content-Type is informational only; opaque-binary is the
-          # honest description.
+          # Status, headers and body are captured separately: a non-2xx can
+          # come from Cloudflare or from Craft, and the headers tell them apart.
           status=$(curl -sS \
             -o response.txt \
             -D response-headers.txt \
@@ -126,10 +82,8 @@ jobs:
             --data-binary @feeds.tar.gz \
             "${WEBHOOK_URL}")
           echo "HTTP ${status}"
-          # Print an allowlist of diagnostic response headers only — never
-          # the raw dump, which can carry Set-Cookie (Cloudflare clearance
-          # / app session cookies). `tr -d '\r'` strips the CRLF curl
-          # writes so the lines render cleanly in the Actions log.
+          # Allowlist only — a raw dump can carry Set-Cookie (Cloudflare
+          # clearance / app session cookies).
           echo "--- response headers (diagnostic subset) ---"
           tr -d '\r' < response-headers.txt \
             | grep -iE '^(HTTP/|server:|cf-ray:|cf-mitigated:|cf-access-aud:|cf-cache-status:|content-type:|retry-after:)' \
