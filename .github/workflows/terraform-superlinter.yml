@@ -11,28 +11,14 @@ name: Terraform Super-Linter
 on:
   workflow_call:
 
-# Keyed on the SHA for pushes and the ref for pull requests. On a PR, cancelling
-# the previous run when a new commit lands is what we want -- only the tip needs
-# a verdict. On a push it is actively wrong: a ref-keyed group makes runs for
-# DIFFERENT commits cancel each other, and GitHub does not create those runs in
-# commit order. A burst of `github_repository_file` pushes from this repo's own
-# apply is exactly that shape, and it left `terraform-cloudflare-r2` with a red
-# main: the run for tip 6b39ae4 was cancelled by a later-created run for its own
-# PARENT 27d6df6, so the tip kept `cancelled` checks while the parent went
-# green. Checkov and Scorecard, which declare no concurrency at all, both passed
-# on that same commit.
-#
-# Per-SHA groups cost more minutes on a rapid series of pushes, since every
-# commit now runs to completion. That is the intended trade -- a commit status
-# that reflects the commit is worth more than the minutes saved.
+# Per-SHA on push, per-ref on pull request. A ref-keyed group on push makes runs
+# for different commits cancel each other and leaves the tip's checks cancelled.
 concurrency:
   group: ${{ github.repository }}-superlinter-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
-# Write scopes so Super-Linter can post commit statuses and the PR summary
-# comment. The comment posts to POST /issues/{n}/comments (Issues API even for
-# a PR), governed by issues:write, not pull-requests:write. Callers grant the
-# same scopes; whichever is narrower wins, so both must include them.
+# The PR summary comment posts via the Issues API, so it needs issues:write,
+# not pull-requests:write. Callers must grant the same scopes; narrower wins.
 permissions:
   checks: write
   contents: read
@@ -51,28 +37,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # The shared Super-Linter configs live in the public `.github` repository,
-      # so this clone needs no credentials and behaves identically for a private
-      # caller, a public one, and a fork's pull request.
-      # Cloned outside the workspace, and checked out with git rather than
-      # actions/checkout, for one reason: Super-Linter v8 resolves DEFAULT_BRANCH
-      # with git against its own working directory, which is always the mounted
-      # workspace root — not DEFAULT_WORKSPACE, which only scopes file
-      # discovery. Checking the caller out to a subdirectory therefore leaves the
-      # workspace root without a .git and the run dies with "Neither main, nor
-      # origin/main exist in /github/workspace" before linting anything. So the
-      # caller must stay at the workspace root, which leaves nowhere inside the
-      # workspace to put the configs without linting them, which is why they land
-      # outside it and are copied in.
+      # Cloned outside the workspace with plain git: Super-Linter resolves
+      # DEFAULT_BRANCH against the workspace root, so the caller must stay there.
       - name: Checkout linter configs
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
-      # Super-Linter reads its per-language configs from `.github/linters/`, so
-      # they are copied in rather than read in place. A config fetched by the
-      # workflow cannot be missing from a freshly scaffolded repo, which is the
-      # failure the per-repo copies existed to prevent. `MARKDOWN_CONFIG_FILE`
-      # and `YAML_CONFIG_FILE` below are still required — v8 does not reliably
-      # auto-discover these, and without them the files are copied and ignored.
+      # Super-Linter reads per-language configs from `.github/linters/`, so they
+      # are copied in. The *_CONFIG_FILE vars below are still required.
       - name: Copy linter configs into workspace
         run: |
           mkdir -p .github/linters
@@ -80,15 +51,8 @@ jobs:
           cp ../fleet-config/yamllint.yml .github/linters/.yamllint.yml
           cp ../fleet-config/tflint.hcl .github/linters/.tflint.hcl
 
-      # Super-Linter cannot express this one: markdownlint does not read `.tf`,
-      # and tflint has no rule comparing a URL in a comment against a version
-      # constraint. So it runs as its own step, out of the same credential-free
-      # clone as the linter configs, and needs no Python environment — the
-      # script is standard library only.
-      #
-      # It fails the job on a `# see` link whose version does not match its
-      # provider's `required_providers` floor: the drift a provider bump leaves
-      # behind when the constraint moves and the links do not.
+      # No packaged linter can express this: it fails the job on a `# see` link
+      # whose version no longer matches its provider's `required_providers`.
       - name: Check `# see` link versions
         run: python3 ../fleet-config/terraform-see-links.py .
 
@@ -106,17 +70,13 @@ jobs:
           VALIDATE_TERRAFORM_TFLINT: true
           VALIDATE_YAML: true
 
-          # Super-Linter v8 auto-discovery doesn't reliably pick up
-          # .github/linters/.yamllint.yml — point at it explicitly so the
-          # repo's `*.tftpl.yml` exclude (Terraform interpolations) is honored.
+          # v8 auto-discovery is unreliable; without these the copied configs
+          # are ignored, losing the `*.tftpl.yml` exclude.
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
           YAML_CONFIG_FILE: .yamllint.yml
 
-          # Without this, tflint runs against Super-Linter's bundled config,
-          # which enables the aws, azurerm and google rulesets at versions the
-          # image pins rather than the fleet does. Super-Linter runs
-          # `tflint --init` against whichever config it resolves, so the plugin
-          # this one declares is downloaded the same way.
+          # Without this, tflint runs Super-Linter's bundled config, which pins
+          # aws/azurerm/google rulesets at the image's versions, not the fleet's.
           TERRAFORM_TFLINT_CONFIG_FILE: .tflint.hcl
 
           FILTER_REGEX_EXCLUDE: \.terraform/
