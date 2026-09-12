@@ -20,19 +20,9 @@ on:
         type: boolean
         default: true
 
-# SHA for pushes, ref for pull requests -- see the long note in
-# `terraform-superlinter.tftpl.yml`. Fixed here too rather than only where it
-# was observed: the defect is in the keying, not in any one workflow, and the
-# burst-push shape that triggers it (this repo's own apply pushing several
-# `github_repository_file` commits back-to-back) reaches every repo the fleet
-# manages, Node ones included.
-#
-# The caller's workflow name is in the group too. Inside a called workflow the
-# `github` context is the caller's, so without it two callers in one repo — Test
-# and signpost's Deploy, both on every push to main — computed the same group
-# and cancelled each other, and a cancelled Deploy test skips the deploy. With
-# it, superseded runs of one workflow still collapse; different workflows
-# no longer do.
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks. The caller's workflow name is in the
+# group too, or two callers in one repo cancel each other and skip a deploy.
 concurrency:
   group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
