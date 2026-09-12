@@ -25,8 +25,7 @@ jobs:
           persist-credentials: false
 
       # Config comes from the public `.github` repo, so no credential is needed.
-      # Cloned outside the workspace so the scan skips it, then copied in:
-      # checkov-action is a Docker action and only the workspace is mounted.
+      # Copied in because checkov-action is Docker and only mounts the workspace.
       - name: Checkout Checkov config
         run: |
           git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
@@ -43,9 +42,8 @@ jobs:
           quiet: true
           soft_fail: true
 
-      # Replaces a SARIF upload that was 44s of a 72s job and could never land:
-      # Code Security is disabled on every Terraform repo, so the API answered
-      # 403 while `continue-on-error` reported it green.
+      # Not a SARIF upload: Code Security is disabled on every Terraform repo, so
+      # the API answers 403 while `continue-on-error` reports the job green.
       - name: Summarise findings
         if: always()
         run: |
