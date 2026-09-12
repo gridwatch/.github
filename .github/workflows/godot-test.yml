@@ -8,19 +8,9 @@
 
 name: Godot Test
 
-# Builds and tests a Godot C# project: installs the editor, imports the
-# project, runs the xUnit suite, gates on coverage, and exports release
-# artifacts.
-#
-# The editor and the export templates are separate downloads. `--import` and
-# the test suite need only the editor; `--export-release` additionally needs
-# the templates for the target platform, which is why the export jobs install
-# both and the test job installs one.
-#
-# Every download is verified against the SHA-512 published in the release's
-# SHA512-SUMS.txt before it is unpacked. That catches a corrupted download and
-# a single-asset swap; it does not catch a full-release compromise, which would
-# need the SUMS file itself verified against Godot's signing key.
+# Installs Godot, imports the project, runs the xUnit suite, gates coverage,
+# and exports. Downloads are verified against the release's SHA512-SUMS.txt,
+# which is itself unverified, so a full-release compromise still passes.
 
 on:
   workflow_call:
@@ -121,10 +111,9 @@ jobs:
     timeout-minutes: 20
 
     env:
-      # Must match the project's Godot.NET.Sdk version exactly, not just
-      # major.minor. The headless import's mono editor rewrites the csproj's
-      # Godot.NET.Sdk to its own version when they differ, and a locked-mode
-      # restore then fails NU1004 against lock files built for the other one.
+      # Must match the project's Godot.NET.Sdk exactly, not just major.minor:
+      # the headless import rewrites the csproj to its own version when they
+      # differ, and a locked-mode restore then fails NU1004.
       GODOT_VERSION: ${{ inputs.godot-version }}
       DOTNET_NOLOGO: '1'
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -139,8 +128,6 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
-          # The csprojs set RestorePackagesWithLockFile, so the lock files are
-          # committed and the hash is stable across runs.
           cache: true
           cache-dependency-path: '**/packages.lock.json'
 
@@ -218,9 +205,8 @@ jobs:
           if (-not $exe) { throw "Godot .exe not found under godot-bin/" }
           "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # The first pass populates .godot/imported/* and may exit non-zero if the
-      # metadata is still half-written when Godot quits — a known 4.x headless
-      # quirk. The second pass must succeed.
+      # The first pass can exit non-zero on half-written metadata (a known 4.x
+      # headless quirk); the second must succeed.
       - name: Godot import (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -237,9 +223,8 @@ jobs:
           & $env:GODOT_BIN --headless --import
           if ($LASTEXITCODE -ne 0) { throw "Godot import failed after retry (exit $LASTEXITCODE)" }
 
-      # Locked mode so a dependency drift fails loudly here rather than
-      # silently regenerating the lock file on CI, which would also defeat the
-      # NuGet cache. Local repro: dotnet restore --locked-mode.
+      # Locked mode so a dependency drift fails here rather than silently
+      # regenerating the lock file and defeating the NuGet cache.
       - name: Restore
         run: dotnet restore --locked-mode
         timeout-minutes: 5
@@ -278,22 +263,18 @@ jobs:
           path: artifacts/test-results/**/*.trx
           if-no-files-found: warn
 
-  # The same schemas the project enforces at load, checked here with the tool
-  # its authors run, so a schema-invalid asset cannot merge.
+  # The same schemas the project enforces at load, so a schema-invalid asset
+  # cannot merge.
   schema-validate:
     if: inputs.schema-validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here — where secrets are legal — to one non-secret boolean the
-    # mint step's condition can test.
+    # reduced here to one non-secret boolean the mint step can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
-      # Checked before the checkout, so a missing secret or unset input reports
-      # what is wrong rather than failing opaquely inside actions/checkout.
-      # Mints a per-run installation token for the private repository
-      # reads below — about an hour's life, contents read.
+      # Mints a per-run installation token for the private repository reads.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -324,8 +305,8 @@ jobs:
             exit 1
           fi
 
-      # persist-credentials: false so the token backing the checkout below is
-      # never written into a .git/config the `go run` step could read back.
+      # persist-credentials: false so no token lands in a .git/config the
+      # `go run` step could read back.
       #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -374,8 +355,7 @@ jobs:
           persist-credentials: false
 
       # Without this the download asks for an artifact called `coverage-` and
-      # fails on a name nothing produced, which reads as a missing artifact
-      # rather than a missing input.
+      # fails as a missing artifact rather than a missing input.
       - name: Check the inputs
         env:
           FROM_RUNNER: ${{ inputs.coverage-from-runner }}
@@ -411,9 +391,7 @@ jobs:
           import xml.etree.ElementTree as ET
 
           # stdlib ElementTree rather than defusedxml: it resolves no external
-          # entities, and the only residual risk is entity-expansion DoS on a
-          # report this workflow generated itself, bounded by the job timeout.
-          # Revisit if this ever parses a file from outside the run.
+          # entities, and this report comes from the run. Revisit if that changes.
           root = ET.parse(sys.argv[1]).getroot()
 
           floor = float(os.environ["COVERAGE_FLOOR"]) / 100
@@ -426,8 +404,7 @@ jobs:
               print("::error::coverage-floor is set but coverage-prefixes is empty")
               sys.exit(1)
 
-          # Per-prefix buckets, so a failure names the module that slipped
-          # rather than only the aggregate.
+          # Per-prefix buckets, so a failure names the module that slipped.
           buckets = {p: [0, 0] for p in prefixes}
 
           for class_el in root.findall(".//class"):
@@ -456,9 +433,8 @@ jobs:
               marker = "" if rate >= floor else f"  [below {floor * 100:.0f}%]"
               print(f"  {p}: {rate * 100:.2f}% ({c}/{v}){marker}")
 
-          # The gate is on the overall rate. The per-prefix marker above is
-          # informational: it surfaces drift in the log without blocking a
-          # merge, until every module clears the floor on its own.
+          # The gate is on the overall rate; the per-prefix marker above is
+          # informational until every module clears the floor on its own.
           sys.exit(0 if overall >= floor else 1)
           PY
 
@@ -482,8 +458,7 @@ jobs:
           cache: true
           cache-dependency-path: '**/packages.lock.json'
 
-      # Same key as the test job, so within a run this restores the editor that
-      # job already downloaded rather than fetching it again.
+      # Same key as the test job, so the editor is downloaded once per run.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
@@ -491,8 +466,8 @@ jobs:
           path: godot-bin
           key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
 
-      # The editor alone cannot export. The templates are a separate ~1GB
-      # download, cached on their own key for the same reason.
+      # The editor alone cannot export; the templates are a separate ~1GB
+      # download on their own key.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: export-templates
@@ -536,8 +511,8 @@ jobs:
             TPZ="Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
             curl -fL -o templates.tpz "${RELEASE_URL}/${TPZ}"
             verify "${TPZ}" templates.tpz
-            # The .tpz is a zip whose payload sits under templates/; Godot wants
-            # that payload directly inside the version directory.
+            # The .tpz payload sits under templates/; Godot wants it directly
+            # inside the version directory.
             unzip -q templates.tpz -d tpz
             DEST="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable.mono"
             mkdir -p "${DEST}"
@@ -558,9 +533,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${OUT_DIR}"
-          # --export-release fails if the preset is absent from
-          # export_presets.cfg, which is the intended outcome: a missing preset
-          # should stop the build rather than upload nothing.
+          # A preset missing from export_presets.cfg fails the export, which is
+          # intended: better than uploading nothing.
           "$GODOT_BIN" --headless --export-release "${PRESET}" "${OUT_DIR}/${PRESET}.app"
           ls -la "${OUT_DIR}"
 
@@ -591,8 +565,7 @@ jobs:
           cache: true
           cache-dependency-path: '**/packages.lock.json'
 
-      # Same key as the test job, so within a run this restores the editor that
-      # job already downloaded rather than fetching it again.
+      # Same key as the test job, so the editor is downloaded once per run.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
