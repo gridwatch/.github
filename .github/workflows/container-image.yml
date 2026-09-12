@@ -68,8 +68,8 @@ on:
         type: boolean
         default: false
     secrets:
-      # The registry this builds into. Set on each container repo by
-      # infrastructure-platform, which owns the registry itself.
+      # The registry this builds into, set on each container repo by
+      # infrastructure-platform.
       ACR_NAME:
         required: true
       AZURE_CLIENT_ID:
@@ -82,11 +82,8 @@ on:
         required: false
       DHI_PASSWORD:
         required: false
-      # The repo-access App halves, minted ON THE RUNNER into a per-run
-      # token that vendors the private gridwatch modules and, when
-      # composer-auth is set, authenticates Composer. The token is never
-      # passed into the container build in any form beyond the BuildKit
-      # composer_auth secret — a leaked image cannot hold it.
+      # The repo-access App halves, minted ON THE RUNNER. The token reaches the
+      # container build only as the BuildKit composer_auth secret.
       REPO_ACCESS_APP_CLIENT_ID:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
@@ -102,23 +99,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     environment: production
-    # Registry identity defined once and referenced by every step below — login,
-    # build tag, push, attest, cosign — so the name can't drift between steps.
-    #
     # ACR_NAME arrives as a secret rather than a literal: infrastructure-platform
-    # owns the registry and already pushes AZURE_* to these repos, so it pushes
-    # the name alongside them. A hardcoded value here is a second source of truth
-    # that a registry rename would silently strand.
+    # owns the registry, and a hardcoded name is a second source of truth that a
+    # rename would silently strand.
     env:
       ACR_NAME: ${{ secrets.ACR_NAME }}
       ACR_LOGIN_SERVER: ${{ secrets.ACR_NAME }}.azurecr.io
-      # GHCR rejects an uppercase path, and `github.repository_owner` is
-      # interpolated rather than hardcoded so a fork pushes to its own namespace.
+      # GHCR rejects an uppercase path; interpolated rather than hardcoded so a
+      # fork pushes to its own namespace.
       GHCR_LOGIN_SERVER: ghcr.io
       GHCR_OWNER: ${{ github.repository_owner }}
-      # A step `if` cannot read the secrets context, so the two App halves
-      # are reduced here — where secrets are legal — to one non-secret
-      # boolean the mint step's condition can test.
+      # A step `if` cannot read the secrets context, so the two App halves are
+      # reduced here to one non-secret boolean the mint step can test.
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -132,9 +124,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # Mints a per-run installation token for the private gridwatch Go
-      # modules — about an hour's life, contents read, scoped to the
-      # repo-access App's installation.
+      # Mints a per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
@@ -145,9 +135,8 @@ jobs:
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      # Vendoring happens on the runner, where the credential legitimately
-      # lives; the rewrite is removed straight after, and the build below
-      # receives a context that needs no network and no token at all.
+      # Vendoring happens on the runner, where the credential lives; the build
+      # below gets a context needing no network and no token.
       - name: Vendor Go modules
         if: inputs.vendor-go-modules
         env:
@@ -160,8 +149,7 @@ jobs:
           fi
           export GOPRIVATE="github.com/gridwatch/*"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
-          # The trap scrubs the token-bearing rewrite however the step ends;
-          # a failed vendor must not leave it behind for later steps.
+          # The trap scrubs the token-bearing rewrite however the step ends.
           trap 'git config --global --remove-section url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/" 2>/dev/null || true' EXIT
           go mod vendor
 
@@ -189,9 +177,8 @@ jobs:
       - name: Log in to ACR
         run: az acr login --name "$ACR_NAME"
 
-      # GITHUB_TOKEN carries `packages: write` from the permissions block, so
-      # GHCR needs no separate credential — unlike ACR, which needs the OIDC
-      # federated identity.
+      # GITHUB_TOKEN carries `packages: write`, so GHCR needs no credential of
+      # its own, unlike ACR's OIDC federated identity.
       - name: Log in to GHCR
         if: inputs.ghcr
         run: printf '%s' "$GHCR_TOKEN" | docker login "$GHCR_LOGIN_SERVER" -u "$GHCR_USERNAME" --password-stdin
@@ -211,28 +198,20 @@ jobs:
           IMAGE_NAME: ${{ inputs.image-name }}
           VERSION: ${{ steps.version.outputs.VERSION }}
           COMPOSER_AUTH_TOKEN: ${{ inputs.composer-auth && steps.app-token.outputs.token || '' }}
-          # Needed here as well as on the push below: an unset GHCR leaves the
-          # second `-t` off, and the push then fails on a tag that was never
-          # applied rather than on anything to do with the registry.
+          # Needed here as well as on the push below: without it the second
+          # `-t` is missing and the push fails on a tag never applied.
           GHCR: ${{ inputs.ghcr }}
         run: |
-          # Always pass --secret so consumer Containerfiles can
-          # unconditionally use `RUN --mount=type=secret,id=composer_auth`.
-          # When no token is supplied the secret file is empty and the
-          # Containerfile's `if [ -s ... ]` guard skips it. The token
-          # reaches jq via env (not argv), so it isn't on the command
-          # line; it's then unset before `docker build` so the build
-          # process doesn't inherit it. Either way the multi-stage
-          # Containerfile keeps it out of the runtime image.
+          # Always pass --secret so a Containerfile can unconditionally mount
+          # id=composer_auth; with no token the file is empty and its guard skips.
           COMPOSER_AUTH_FILE=$(mktemp)
           trap 'rm -f "$COMPOSER_AUTH_FILE"' EXIT
           if [ -n "$COMPOSER_AUTH_TOKEN" ]; then
             jq -nc '{"github-oauth":{"github.com":env.COMPOSER_AUTH_TOKEN}}' > "$COMPOSER_AUTH_FILE"
           fi
           unset COMPOSER_AUTH_TOKEN
-          # A single build tagged for both registries, rather than two builds:
-          # two would produce two digests for the same source, and every
-          # signature and SBOM below is bound to a digest.
+          # One build tagged for both registries: two builds would give two
+          # digests, and every signature and SBOM below is bound to a digest.
           TAGS="-t $ACR_LOGIN_SERVER/$IMAGE_NAME:$VERSION"
           if [ "$GHCR" = "true" ]; then
             TAGS="$TAGS -t $GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME:$VERSION"
@@ -252,10 +231,8 @@ jobs:
         run: |
           IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME:$VERSION"
           docker push "$IMAGE"
-          # Read the digest from the ACR push specifically. `RepoDigests[0]` is
-          # whichever registry answered first once the image carries two tags,
-          # so indexing blind would make the digest every downstream step signs
-          # depend on push order.
+          # Read the ACR digest specifically: with two tags, `RepoDigests[0]` is
+          # whichever registry answered first, so blind indexing follows push order.
           DIGEST=$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" \
             | grep "^$ACR_LOGIN_SERVER/$IMAGE_NAME@" | head -1 | cut -d@ -f2)
           if [ -z "$DIGEST" ]; then
@@ -289,14 +266,9 @@ jobs:
           fail-build: true
           severity-cutoff: critical
 
-      # GitHub's attestation API is plan-gated for private org repos, so
-      # these fail with "Feature not available for the <org> organization"
-      # unless `github-attestations` is switched on. They stay off by
-      # default: with `continue-on-error` they reported step conclusion
-      # `success` while failing, so every run looked green and the error
-      # annotations were the only evidence — which is exactly how a broken
-      # supply-chain step hides. The SBOM is attested via Cosign below
-      # instead, which has no plan dependency.
+      # GitHub's attestation API is plan-gated for private org repos, so these
+      # stay off by default. Never add `continue-on-error`: it reported success
+      # while failing, which is how a broken supply-chain step hides.
       # see: https://github.com/actions/attest/releases/tag/v4.2.2
       - name: Attest SBOM (GitHub)
         if: inputs.sbom && inputs['github-attestations']
@@ -317,22 +289,15 @@ jobs:
           subject-digest: ${{ steps.push.outputs.DIGEST }}
           push-to-registry: true
 
-      # Cosign keyless signing works on any plan — it writes a Sigstore
-      # bundle to the registry as an OCI 1.1 referrer, not to GitHub. These
-      # steps deliberately do NOT set `continue-on-error`: a signature or
-      # attestation that silently fails to publish is worse than a red
-      # build, because downstream verification then trusts an image that
-      # was never actually signed.
+      # Cosign keyless signing works on any plan. No `continue-on-error`: a
+      # signature that silently fails to publish is worse than a red build.
       # see: https://github.com/sigstore/cosign-installer/releases/tag/v4.1.2
       - name: Install Cosign
         if: inputs.cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
-      # Signed per registry, not once. A Cosign signature is an OCI referrer
-      # stored beside the image in the registry it was pushed to, so signing ACR
-      # leaves the GHCR copy unsigned — and an unsigned copy is the one people
-      # can pull without an Azure account. Same digest, so both signatures cover
-      # identical bytes.
+      # Signed per registry: a signature is an OCI referrer in the registry it
+      # was pushed to, so signing ACR leaves the GHCR copy unsigned.
       - name: Sign image
         if: inputs.cosign
         env:
@@ -345,10 +310,8 @@ jobs:
             cosign sign --yes "$GHCR_LOGIN_SERVER/$GHCR_OWNER/$IMAGE_NAME@$DIGEST"
           fi
 
-      # Attaches the SPDX SBOM to the image digest as a second referrer, so
-      # `cosign verify-attestation --type spdxjson` can recover it from the
-      # registry. Requires both flags: the SBOM must exist and Cosign must
-      # be installed.
+      # Attaches the SBOM to the digest as a referrer, recoverable with
+      # `cosign verify-attestation --type spdxjson`.
       - name: Attest SBOM (Cosign)
         if: inputs.sbom && inputs.cosign
         env:
@@ -360,8 +323,7 @@ jobs:
             --predicate sbom.spdx.json \
             --type spdxjson \
             "$ACR_LOGIN_SERVER/$IMAGE_NAME@$DIGEST"
-          # Same reasoning as the signature: the attestation is a referrer in
-          # one registry, so the GHCR copy needs its own.
+          # A referrer lives in one registry, so the GHCR copy needs its own.
           if [ "$GHCR" = "true" ]; then
             cosign attest --yes \
               --predicate sbom.spdx.json \
