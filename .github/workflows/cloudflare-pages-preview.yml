@@ -34,8 +34,11 @@ jobs:
     permissions:
       contents: read
       deployments: write
+    # One shared environment, not one per pull request: nothing this workflow can
+    # authenticate as may delete an environment (that takes Administration write),
+    # so per-PR names piled up — 51 across the six sites before they were swept.
     environment:
-      name: preview-pr-${{ github.event.pull_request.number }}
+      name: preview
       url: ${{ steps.deploy.outputs.deployment-url }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
