@@ -45,6 +45,8 @@ jobs:
         with:
           client-id: ${{ secrets.EXPORT_APP_CLIENT_ID }}
           private-key: ${{ secrets.EXPORT_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
 
       - name: Normalize exported JSON
         run: |
