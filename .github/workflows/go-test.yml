@@ -73,6 +73,7 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permission-contents: read
 
       - name: Checkout sibling repositories
         env:
