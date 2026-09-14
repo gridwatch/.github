@@ -1,0 +1,196 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+#
+# Advanced setup rather than default setup, whose Swift autobuild cannot build
+# these repos; see AGENTS.md (CodeQL for Swift).
+
+name: CodeQL Swift
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: 'Xcode project file; empty builds the Swift package at the repository root'
+        type: string
+        required: false
+        default: ''
+      scheme:
+        description: 'Xcode scheme to build'
+        type: string
+        required: true
+      destinations:
+        description: 'JSON array of xcodebuild destinations, each built under the tracer'
+        type: string
+        required: true
+      gridwatchkit:
+        description: 'Clone GridwatchKit as a sibling before building'
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      # The repo-access App halves, minted below into a per-run token for the
+      # GridwatchKit clone. Optional because only `gridwatchkit` callers need
+      # them; such a caller without them fails at the clone rather than
+      # analysing a build that cannot compile.
+      REPO_ACCESS_APP_CLIENT_ID:
+        required: false
+      REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-codeql-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  actions:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    timeout-minutes: 15
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: actions
+          build-mode: none
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:actions
+
+  swift:
+    runs-on: macos-26
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    # A step `if` cannot read the secrets context, so the two App halves are
+    # reduced here to one non-secret boolean the mint step can test.
+    env:
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+    timeout-minutes: 120
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ inputs.gridwatchkit && env.APP_AUTH_CONFIGURED == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: GridwatchKit
+          permission-contents: read
+
+      - name: Checkout GridwatchKit
+        if: ${{ inputs.gridwatchkit }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GridwatchKit is private; this run has no REPO_ACCESS_APP_* secrets to clone it"
+            exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
+
+      - name: Install XcodeGen
+        if: ${{ inputs.project != '' }}
+        env:
+          XCODEGEN_VERSION: "2.46.0"
+          XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+        run: |
+          install_dir="$(mktemp -d)"
+          zip="${install_dir}/xcodegen.zip"
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${zip}"
+          echo "${XCODEGEN_SHA256}  ${zip}" | shasum -a 256 -c -
+          unzip -q "${zip}" -d "${install_dir}"
+          echo "${install_dir}/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Generate Xcode project
+        if: ${{ inputs.project != '' }}
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          xcodegen generate
+          # Same seeding as swift-app-test, so the analysed build uses the committed pins.
+          if [ -f Package.resolved ]; then
+            dir="${PROJECT}/project.xcworkspace/xcshareddata/swiftpm"
+            mkdir -p "${dir}"
+            cp Package.resolved "${dir}/Package.resolved"
+          fi
+
+      # Resolved before init so the tracer never sees the clones, and into
+      # RUNNER_TEMP so dependency sources stay outside the analysed tree.
+      # `-packageAuthorizationProvider netrc` keeps xcodebuild off the Keychain.
+      - name: Resolve Swift packages
+        timeout-minutes: 10
+        env:
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          args=(-scheme "${SCHEME}")
+          if [ -n "${PROJECT}" ]; then args+=(-project "${PROJECT}"); fi
+          xcodebuild "${args[@]}" \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm" \
+            -packageAuthorizationProvider netrc \
+            -resolvePackageDependencies
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: swift
+          build-mode: manual
+
+      # The tracer runs xcodebuild translated, as an x86_64 Mac; see AGENTS.md
+      # (CodeQL for Swift) for why that needs generic destinations, ARCHS=arm64
+      # and no Metal sources.
+      - name: Build
+        timeout-minutes: 90
+        env:
+          DESTINATIONS: ${{ inputs.destinations }}
+          PROJECT: ${{ inputs.project }}
+          SCHEME: ${{ inputs.scheme }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          args=(-scheme "${SCHEME}")
+          if [ -n "${PROJECT}" ]; then args+=(-project "${PROJECT}"); fi
+          while IFS= read -r destination; do
+            echo "::group::${destination}"
+            xcodebuild "${args[@]}" \
+              -destination "${destination}" \
+              -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm" \
+              -packageAuthorizationProvider netrc \
+              -disableAutomaticPackageResolution \
+              ARCHS=arm64 \
+              CODE_SIGNING_ALLOWED=NO \
+              COMPILER_INDEX_STORE_ENABLE=NO \
+              EXCLUDED_SOURCE_FILE_NAMES='*.metal' \
+              build
+            echo "::endgroup::"
+          done < <(jq -r '.[]' <<<"${DESTINATIONS}")
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:swift
