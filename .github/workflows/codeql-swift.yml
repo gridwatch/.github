@@ -128,15 +128,23 @@ jobs:
 
       - name: Generate Xcode project
         if: ${{ inputs.project != '' }}
+        run: xcodegen generate
+
+      # Same seeding as swift-app-test, so the analysed build uses the committed pins.
+      - name: Seed committed package pins
+        if: ${{ inputs.project != '' }}
         env:
           PROJECT: ${{ inputs.project }}
         run: |
-          xcodegen generate
-          # Same seeding as swift-app-test, so the analysed build uses the committed pins.
           if [ -f Package.resolved ]; then
             dir="${PROJECT}/project.xcworkspace/xcshareddata/swiftpm"
             mkdir -p "${dir}"
             cp Package.resolved "${dir}/Package.resolved"
+            echo "seeded pins:"
+            # Logging only; a grep miss must not fail the job.
+            grep -E '"(identity|version)"' Package.resolved | paste - - | sed 's/^/  /' || true
+          else
+            echo "no committed Package.resolved — resolving from project.yml ranges"
           fi
 
       # Resolved before init so the tracer never sees the clones, and into
