@@ -81,6 +81,23 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # Same seeding as swift-app-test: without it the fresh .xcodeproj resolves
+      # the project.yml ranges and ignores the committed pins.
+      - name: Seed committed package pins
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          if [ -f Package.resolved ]; then
+            dir="${PROJECT}/project.xcworkspace/xcshareddata/swiftpm"
+            mkdir -p "${dir}"
+            cp Package.resolved "${dir}/Package.resolved"
+            echo "seeded pins:"
+            # Logging only; a grep miss must not fail the job.
+            grep -E '"(identity|version)"' Package.resolved | paste - - | sed 's/^/  /' || true
+          else
+            echo "no committed Package.resolved — resolving from project.yml ranges"
+          fi
+
       # Remote pins live in Vendor/**/Package.swift, not project.yml; the glob is
       # scoped to Vendor/ so in-workspace .spm-cache can't change its own key.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
