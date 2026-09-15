@@ -39,6 +39,10 @@ on:
         description: 'Variable the connection URL is exported as (e.g. CROSSBAND_TEST_DATABASE_URL).'
         type: string
         default: ''
+      working-directory:
+        description: 'Directory holding go.mod, when the module is not at the repository root (e.g. `tools`).'
+        type: string
+        default: '.'
     secrets:
       # Optional so forks and public repos still run — a fork PR receives no
       # secrets. Every step needing the token is guarded on it being set.
@@ -62,6 +66,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      # goroutineleak.go lives in the public `.github` repository, so this clone
+      # needs no credentials and works for public and fork callers. It shares a
+      # trust root with this workflow, which is read from the same `.github@main`,
+      # and the tests it runs see the module token either way, so pinning adds nothing.
+      - name: Checkout test harness
+        run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
       # Per-run installation token for the private gridwatch Go modules.
       #
@@ -102,7 +113,8 @@ jobs:
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ inputs.working-directory }}/go.mod
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
 
       # GOPRIVATE keeps gridwatch modules off the public proxy and checksum db.
       # Skipped without a token: the rewrite would break anonymous public fetches.
@@ -148,7 +160,9 @@ jobs:
 
       # Repo-chosen variable name: these suites skip when it is unset, so a
       # mismatch silently skips every database test and still reports passing.
+      # goroutineleak.go wraps go test with the leak check `task test` runs locally.
       - name: Run tests
+        working-directory: ${{ inputs.working-directory }}
         env:
           DATABASE_URL_ENV: ${{ inputs.database-url-env }}
           POSTGRES_IMAGE: ${{ inputs.postgres-image }}
@@ -161,10 +175,11 @@ jobs:
           if [ -n "${DATABASE_URL_ENV}" ]; then
             export "${DATABASE_URL_ENV}=postgres://test:test@localhost:5432/test?sslmode=disable"
           fi
-          go test -race -count=1 -coverprofile=coverage.out ./...
+          go run "${GITHUB_WORKSPACE}/../fleet-config/goroutineleak.go" -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Enforce coverage threshold
         if: inputs.coverage-threshold > 0
+        working-directory: ${{ inputs.working-directory }}
         env:
           COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
         run: |
