@@ -219,7 +219,9 @@ func instrument(p pkg, ids names, tmp string, replace map[string]string) error {
 	var existing *ast.FuncDecl
 	var existingSrc []byte
 	external := false
-	// A TestMain declared as a var, const or type, keyed by whether it is in the external test package.
+	// The parsed files, and any TestMain declared as a var, const or type, both keyed
+	// by whether they belong to the external test package.
+	scope := map[bool][]*ast.File{}
 	nonHook := map[bool]token.Pos{}
 	for i, name := range files {
 		isExternal := i >= len(p.TestGoFiles)
@@ -233,6 +235,7 @@ func instrument(p pkg, ids names, tmp string, replace map[string]string) error {
 			// Left alone: go test reports the syntax error if the package is selected.
 			return nil
 		}
+		scope[isExternal] = append(scope[isExternal], f)
 		if pkgName == "" {
 			pkgName, external = f.Name.Name, isExternal
 		}
@@ -261,19 +264,26 @@ func instrument(p pkg, ids names, tmp string, replace map[string]string) error {
 			if err != nil {
 				return nil
 			}
+			scope[false] = append(scope[false], f)
 			pos := declaredTestMain(f)
 			if fn := findTestMain(f); fn != nil {
 				pos = fn.Pos()
 			}
-			if pos.IsValid() {
+			if _, seen := nonHook[false]; pos.IsValid() && !seen {
 				nonHook[false] = pos
-				break
 			}
 		}
 	}
 	if pos, ok := nonHook[external]; ok {
 		reason := fmt.Sprintf("%s: this TestMain is not the test hook, and the goroutine leak check needs that name for its own hook; rename it", fset.Position(pos))
 		return refuse(p, ids, pkgName, reason, tmp, replace)
+	}
+	// Only the declaration is renamed, so any other reference would reach the added hook.
+	if existing != nil {
+		if pos := referencesTestMain(scope[external], existing); pos.IsValid() {
+			reason := fmt.Sprintf("%s: TestMain is referred to here, and the goroutine leak check renames it; move what both need into a helper", fset.Position(pos))
+			return refuse(p, ids, pkgName, reason, tmp, replace)
+		}
 	}
 
 	// Either way the check runs only once the tests passed, so a failure is not
@@ -344,6 +354,43 @@ func declaredTestMain(f *ast.File) token.Pos {
 		}
 	}
 	return token.NoPos
+}
+
+// referencesTestMain returns where files refer to TestMain other than by decl, its
+// declaration. A field, method, selector or composite literal key of that name is
+// not a reference to it.
+func referencesTestMain(files []*ast.File, decl *ast.FuncDecl) token.Pos {
+	skip := map[*ast.Ident]bool{decl.Name: true}
+	found := token.NoPos
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if found.IsValid() {
+				return false
+			}
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				skip[n.Sel] = true
+			case *ast.FuncDecl:
+				if n.Recv != nil {
+					skip[n.Name] = true
+				}
+			case *ast.Field:
+				for _, name := range n.Names {
+					skip[name] = true
+				}
+			case *ast.KeyValueExpr:
+				if id, ok := n.Key.(*ast.Ident); ok {
+					skip[id] = true
+				}
+			case *ast.Ident:
+				if n.Name == "TestMain" && !skip[n] {
+					found = n.Pos()
+				}
+			}
+			return true
+		})
+	}
+	return found
 }
 
 // isHook reports whether fn is the TestMain hook by the go command's own rule: one
