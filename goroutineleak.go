@@ -40,6 +40,7 @@ type pkg struct {
 	Dir          string
 	ImportPath   string
 	GoFiles      []string
+	CgoFiles     []string
 	TestGoFiles  []string
 	XTestGoFiles []string
 }
@@ -191,7 +192,7 @@ func listFlags(args []string) []string {
 			return flags
 		case "race", "msan", "asan":
 			flags = append(flags, args[i])
-		case "tags", "mod", "modfile":
+		case "tags", "mod", "modfile", "compiler":
 			if !hasValue && i+1 < len(args) {
 				i++
 				value = args[i]
@@ -242,7 +243,7 @@ func instrument(p pkg, ids names, tmp string, replace map[string]string) error {
 		if fn == nil {
 			continue
 		}
-		if !isHook(f, fn) {
+		if !isHook(fn) {
 			reason := fmt.Sprintf("%s: TestMain is not func TestMain(*testing.M), and the goroutine leak check needs that name for its own hook; rename it", fset.Position(fn.Pos()))
 			return refuse(p, ids, f.Name.Name, reason, tmp, replace)
 		}
@@ -255,7 +256,7 @@ func instrument(p pkg, ids names, tmp string, replace map[string]string) error {
 	// The internal test package shares a scope with the package's own files, where
 	// go test treats even a func TestMain as an ordinary function.
 	if !external {
-		for _, name := range p.GoFiles {
+		for _, name := range slices.Concat(p.GoFiles, p.CgoFiles) {
 			f, err := parser.ParseFile(fset, filepath.Join(p.Dir, name), nil, parser.SkipObjectResolution)
 			if err != nil {
 				return nil
@@ -345,24 +346,24 @@ func declaredTestMain(f *ast.File) token.Pos {
 	return token.NoPos
 }
 
-// isHook reports whether fn is func TestMain(*testing.M). go test runs a
+// isHook reports whether fn is the TestMain hook by the go command's own rule: one
+// *M or *pkg.M parameter and no results, with the type itself left to the compiler,
+// so an alias of testing.M counts. go test rejects type parameters, and it runs a
 // TestMain(*testing.T) as an ordinary test instead.
-func isHook(f *ast.File, fn *ast.FuncDecl) bool {
+func isHook(fn *ast.FuncDecl) bool {
 	params := fn.Type.Params.List
-	if fn.Type.Results != nil || len(params) != 1 || len(params[0].Names) > 1 {
+	if fn.Type.TypeParams != nil || (fn.Type.Results != nil && len(fn.Type.Results.List) > 0) || len(params) != 1 || len(params[0].Names) > 1 {
 		return false
 	}
 	star, ok := params[0].Type.(*ast.StarExpr)
 	if !ok {
 		return false
 	}
-	testingName := importName(f, "testing")
 	switch t := star.X.(type) {
 	case *ast.Ident:
-		return testingName == "." && t.Name == "M"
+		return t.Name == "M"
 	case *ast.SelectorExpr:
-		id, ok := t.X.(*ast.Ident)
-		return ok && testingName != "" && id.Name == testingName && t.Sel.Name == "M"
+		return t.Sel.Name == "M"
 	}
 	return false
 }
@@ -388,6 +389,10 @@ func importName(f *ast.File, path string) string {
 // checkReturns rejects a TestMain that exits once the tests have run, since the
 // leak check runs after it returns and would never be reached. An exit in a defer
 // or a closure can run after m.Run wherever it is written, so either counts.
+//
+// Order is source order, not control flow: an exit written after m.Run is refused
+// even on a branch that cannot follow it, since a refusal that names the line is
+// safer than a check that silently never runs.
 func checkReturns(fset *token.FileSet, f *ast.File, fn *ast.FuncDecl) error {
 	// A dot import spells os.Exit as a bare Exit, so both forms count.
 	osName := importName(f, "os")
