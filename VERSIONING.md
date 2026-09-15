@@ -99,7 +99,7 @@ This is not a preference. The Terraform Registry parses a module's git tags as s
 
 | Runtime            | Minimum Version |
 |--------------------|-----------------|
-| Go                 | 1.26            |
+| Go                 | 1.27            |
 | Swift              | 6               |
 | iOS / iPadOS       | 26              |
 | macOS (build host) | 26              |
