@@ -1,0 +1,123 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+
+name: Tag Reusables
+
+# Cuts a date-based tag when a reusable workflow changes, so a caller's `uses:`
+# can pin an immutable commit instead of `@main`. Nothing resolves a pin until
+# a tag exists, so an untagged change leaves every caller following main.
+#
+# The only workflow here that runs on this repository rather than being called
+# by another one; `workflow_dispatch` cuts the first tag before any push has.
+
+on:
+  push:
+    branches: [main]
+    # Only the reusables are pinned. Community health markdown changing is not
+    # a new version of anything a caller resolves.
+    paths:
+      - '.github/workflows/**'
+      # Not the tagger itself: editing it is not a new version of any reusable,
+      # and a tag cut then pins callers to a commit that changed nothing.
+      - '!.github/workflows/tag.yml'
+  workflow_dispatch:
+
+# Terraform pushes each file as its own commit, so one apply arrives as a burst
+# of runs. GitHub holds one running and one pending run per group and replaces
+# the pending one whenever a newer run queues, so a burst collapses to roughly
+# the first and the last rather than queueing all of them. Dropping the middle
+# is the intent: each surviving run tags main's tip as it finds it, so an apply
+# leaves one or two dated tags rather than one per file. The suffix orders
+# them, each points at a real commit, and a caller pin names one outright.
+concurrency:
+  # One tag job at a time per repository, the shape `go-module-tag.tftpl.yml`
+  # already uses: run concurrently and every one computes the same next suffix,
+  # then races on the ref create where one wins and the rest answer 422.
+  #
+  # Queued, not cancelled. AGENTS.md (Workflow concurrency) bars a *cancelling*
+  # group a push can reach, because GitHub does not create runs in commit order
+  # and the survivor can be an ancestor's. Nothing is cancelled here.
+  #
+  # Pushes to main and a dispatch on main share one queue, so a burst still
+  # collapses. Any other ref gets a group of its own: a dispatch from a branch
+  # would otherwise replace the pending main run and then skip its own job on
+  # the `if` below, leaving that reusable change with nothing left to tag it.
+  group: tag-reusables-${{ github.repository }}-${{ github.ref == 'refs/heads/main' && 'main' || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: tag
+    # `branches:` filters pushes only, so a dispatch may name any ref. This job
+    # writes a tag with `contents: write`, and a tag on an unmerged commit is
+    # one every caller could pin, so the ref is checked rather than assumed.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      # The org default for GITHUB_TOKEN is read, so the tag write is asked for
+      # here or the run fails at the API call rather than earlier.
+      contents: write
+    steps:
+      - name: Tag the current tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # The tip, not this event's own commit. A later commit on a path this
+          # workflow ignores (README.md, SECURITY.md, both pushed by another
+          # workspace) would otherwise strand the reusable change with no run
+          # left to tag it.
+          tip=$(gh api "repos/${REPO}/commits/main" --jq .sha)
+
+          # --paginate, or only the first 30 refs arrive. Refs sort by name, so
+          # once there is more than one page today's tags sit on the last one,
+          # and the suffix below would restart at -1 and collide with a 422.
+          # `jq -s add` merges the pages whether or not gh joins them itself,
+          # and answers [] when the repository has no tags at all.
+          tags=$(gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
+            | jq -s 'add // []')
+
+          # Idempotence: a re-run, or a second run reaching the same tip, must
+          # not mint a second tag for one commit. Restricted to the shape this
+          # workflow creates, or an unrelated `v1.0.0` sitting on the tip would
+          # count as tagged and leave stage 2 with no dated ref to pin.
+          if printf '%s' "${tags}" \
+            | jq -e --arg tip "${tip}" \
+                'any(.[]; .object.sha == $tip and (.ref | test("^refs/tags/v[0-9]{8}-[0-9]+$")))' \
+            >/dev/null; then
+            echo "${tip} is already tagged; nothing to do"
+            exit 0
+          fi
+
+          today=$(date -u +%Y%m%d)
+
+          # The suffix is compared with `sort -n`, not as a version string: git
+          # and semver both read `-N` as a prerelease marker, which ranks -10
+          # below -2 and would mint a tag that already exists.
+          # Numeric suffixes only. A hand-cut `v${today}-rc1` would otherwise
+          # reach the arithmetic below and evaluate as 0, colliding with an
+          # existing tag, and `v${today}-1/0` would divide by zero and abort
+          # the run. `|| true` because grep exits 1 on the first tag of the day,
+          # which `pipefail` would otherwise turn into a failed run.
+          last=$(printf '%s' "${tags}" \
+            | jq -r --arg prefix "refs/tags/v${today}-" \
+                '.[] | select(.ref | startswith($prefix)) | .ref' \
+            | sed 's/.*-//' | grep -E '^[0-9]+$' | sort -n | tail -n1 || true)
+          # 10# forces base ten: bash reads a leading zero as octal, so a
+          # hand-cut -08 or -09 would abort the run rather than advance it.
+          next="v${today}-$(( 10#${last:-0} + 1 ))"
+
+          echo "tagging ${tip} as ${next}"
+
+          # The tag alone, not a release. Every consumer is a Terraform pin, so
+          # a release per apply would be noise nobody reads.
+          gh api "repos/${REPO}/git/refs" \
+            -f ref="refs/tags/${next}" \
+            -f sha="${tip}"
