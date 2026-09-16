@@ -51,6 +51,7 @@ concurrency:
 
 jobs:
   actions:
+    name: actions
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -75,6 +76,7 @@ jobs:
           category: /language:actions
 
   swift:
+    name: swift
     runs-on: macos-26
     permissions:
       actions: read
