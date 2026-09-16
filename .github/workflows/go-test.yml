@@ -56,6 +56,7 @@ permissions:
 
 jobs:
   test:
+    name: test
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
     # reduced here to one non-secret boolean the mint step's `if` can test.
