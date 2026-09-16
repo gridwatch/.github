@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   preview:
+    name: preview
     runs-on: ubuntu-latest
     permissions:
       contents: read
