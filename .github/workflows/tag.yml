@@ -26,11 +26,12 @@ on:
 
 # Terraform pushes each file as its own commit, so one apply arrives as a burst
 # of runs. GitHub holds one running and one pending run per group and replaces
-# the pending one whenever a newer run queues, so a burst collapses to roughly
-# the first and the last rather than queueing all of them. Dropping the middle
-# is the intent: each surviving run tags main's tip as it finds it, so an apply
-# leaves one or two dated tags rather than one per file. The suffix orders
-# them, each points at a real commit, and a caller pin names one outright.
+# the pending one whenever a newer run queues, so most of a burst is cancelled
+# rather than queued. The runs that survive each tag main's tip as they find
+# it, and the tip keeps moving while the burst lands, so an apply still leaves
+# several dated tags — the first left five — rather than one per file. The
+# suffix orders them, each points at a real commit, and `reusable_ref` names
+# one outright rather than following the newest.
 concurrency:
   # One tag job at a time per repository, the shape `go-module-tag.tftpl.yml`
   # already uses: run concurrently and every one computes the same next suffix,
