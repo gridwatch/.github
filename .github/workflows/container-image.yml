@@ -97,6 +97,7 @@ permissions:
 
 jobs:
   build:
+    name: build
     runs-on: ubuntu-latest
     environment: production
     # ACR_NAME arrives as a secret rather than a literal: infrastructure-platform
