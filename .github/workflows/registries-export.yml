@@ -28,6 +28,7 @@ permissions:
 
 jobs:
   export:
+    name: export
     runs-on: ubuntu-latest
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
