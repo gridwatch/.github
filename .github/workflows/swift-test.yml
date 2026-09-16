@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   test:
+    name: test
     runs-on: macos-26
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
