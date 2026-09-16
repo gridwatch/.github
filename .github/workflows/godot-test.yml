@@ -103,6 +103,9 @@ permissions:
 
 jobs:
   test:
+    # The matrix dimension too: a constant name labels every runner's check
+    # identically, so a failed one cannot be told from the rest.
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -266,6 +269,7 @@ jobs:
   # The same schemas the project enforces at load, so a schema-invalid asset
   # cannot merge.
   schema-validate:
+    name: schema-validate
     if: inputs.schema-validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -347,6 +351,7 @@ jobs:
           done
 
   coverage-gate:
+    name: coverage-gate
     if: inputs.coverage-floor > 0
     needs: test
     runs-on: ubuntu-latest
@@ -441,6 +446,7 @@ jobs:
           PY
 
   build-macos:
+    name: build-macos
     if: inputs.macos-export-preset != ''
     needs: test
     runs-on: macos-14
@@ -548,6 +554,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
+    name: build-windows
     if: inputs.windows-export-preset != ''
     needs: test
     runs-on: windows-latest
