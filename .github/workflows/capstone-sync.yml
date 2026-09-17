@@ -26,6 +26,13 @@ on:
           infrastructure-capstone.
         type: string
         required: true
+      yaml-collections:
+        description: |
+          Space-separated directories of <slug>.yml this repo ships beside its root CSVs (for
+          example 'commanders qrf'). Empty packages only the root CSVs and schemas, which is
+          every repo that carries no YAML collection.
+        type: string
+        default: ''
     secrets:
       CF_ACCESS_CLIENT_ID:
         description: 'Cloudflare Access service-token client ID for the CAPSTONE feeds-sync webhook.'
@@ -51,6 +58,8 @@ jobs:
         # `shell: bash` is explicit: this script needs `shopt -s nullglob`,
         # bash arrays and `[[ ... ]]`.
         shell: bash
+        env:
+          YAML_COLLECTIONS: ${{ inputs.yaml-collections }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -59,8 +68,17 @@ jobs:
             echo "::error::No *.csv or *.schema.json files found at repo root — nothing to sync."
             exit 1
           fi
+          # Whole directories, not a glob of files: the importer treats a collection file that is
+          # absent from the payload as deleted, so a partial directory silently drops entries.
+          for collection in ${YAML_COLLECTIONS}; do
+            if [[ ! -d "${collection}" ]]; then
+              echo "::error::yaml-collections names '${collection}', which is not a directory in this repo."
+              exit 1
+            fi
+            files+=("${collection}")
+          done
           tar -czf feeds.tar.gz "${files[@]}"
-          echo "Packaged ${#files[@]} files into feeds.tar.gz ($(stat -c %s feeds.tar.gz) bytes)."
+          echo "Packaged ${#files[@]} root entries into feeds.tar.gz ($(stat -c %s feeds.tar.gz) bytes)."
 
       - name: POST to Craft webhook
         env:
