@@ -27,6 +27,19 @@ on:
         description: 'Commit SHA of gridwatch/twelve-bravo to run the validator from'
         type: string
         required: true
+      also-root-repo:
+        description: |
+          Another gridwatch feed repo whose root schemas join 12b's global handle check, by name
+          (for example 'world-data'). Nothing in it is validated and no finding is attributed to
+          it. Empty runs no cross-repo check.
+        type: string
+        default: ''
+      theater-server-ref:
+        description: |
+          Commit SHA of gridwatch/theater-server to run `content validate` from, the game-rule
+          half of the gate. Empty skips it, which is what a repo holding no game content does.
+        type: string
+        default: ''
     secrets:
       # The repo-access App halves, minted below into a per-run token for
       # private repository reads. Optional so public and fork callers run.
@@ -71,7 +84,12 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: twelve-bravo
+          # All three are private, and all three are in `repo_access_token_repos`. A repo that
+          # needs neither extra checkout is unaffected: the steps below are gated on their inputs.
+          repositories: |
+            twelve-bravo
+            theater-server
+            world-data
           permission-contents: read
 
       - name: Checkout twelve-bravo
@@ -83,6 +101,20 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
+      # Deliberately unpinned, unlike the two validators: this is not a gate input but the other
+      # half of a "do these two repos agree right now" question, and pinning it would let a
+      # world-data handle change go unnoticed here until somebody bumped a SHA.
+      #
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - name: Checkout the cross-repo handle source
+        if: ${{ inputs.also-root-repo != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: gridwatch/${{ inputs.also-root-repo }}
+          path: ${{ inputs.also-root-repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -90,11 +122,59 @@ jobs:
 
       - name: Run 12b feeds validate
         working-directory: twelve-bravo
+        # `shell: bash` is explicit: the optional flag is carried in an array, and an empty array
+        # expanding to nothing under `set -u` is a bash 4.4+ behaviour, not a POSIX sh one.
+        shell: bash
         env:
           CITATION_URLS: ${{ inputs.citation-urls }}
           POOLED_SECTIONS: ${{ inputs.pooled-sections }}
+          ALSO_ROOT: ${{ inputs.also-root-repo }}
         run: |
+          set -euo pipefail
+          also_root=()
+          if [[ -n "${ALSO_ROOT}" ]]; then
+            also_root=(--also-root "../${ALSO_ROOT}")
+          fi
           go run ./cmd/12b feeds validate \
             --root ../feeds \
             --citation-urls "${CITATION_URLS}" \
-            --pooled-sections "${POOLED_SECTIONS}"
+            --pooled-sections "${POOLED_SECTIONS}" \
+            "${also_root[@]}"
+
+      # theater-server gitignores its vendor directory (it is a container prebuild artifact), and
+      # go-cli-app, go-server and design-system are private, so this needs the token rewrite. The
+      # public module proxy answering for them today is a cache of when they were public, not a
+      # guarantee.
+      - name: Checkout theater-server
+        if: ${{ inputs.theater-server-ref != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: gridwatch/theater-server
+          ref: ${{ inputs.theater-server-ref }}
+          path: theater-server
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        if: ${{ inputs.theater-server-ref != '' }}
+        with:
+          go-version-file: theater-server/go.mod
+
+      - name: Configure private module access
+        if: ${{ inputs.theater-server-ref != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::content validate needs the repo-access App token for the private gridwatch modules"
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      - name: Run theater-server content validate
+        if: ${{ inputs.theater-server-ref != '' }}
+        working-directory: theater-server
+        run: go run ./cmd/server content validate --dir ../feeds
