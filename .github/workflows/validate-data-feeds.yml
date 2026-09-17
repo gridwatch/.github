@@ -70,10 +70,6 @@ jobs:
           path: feeds
           persist-credentials: false
 
-      # twelve-bravo is checked out at a pinned SHA below, so a merge there
-      # cannot silently change what this gate accepts.
-      #
-      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       # Mints a per-run installation token for the private repository reads below.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
@@ -84,14 +80,19 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          # All three are private, and all three are in `repo_access_token_repos`. A repo that
-          # needs neither extra checkout is unaffected: the steps below are gated on their inputs.
+          # Three checkouts, then the private Go modules both validators import.
           repositories: |
             twelve-bravo
             theater-server
             world-data
+            go-cli-app
+            go-server
+            design-system
           permission-contents: read
 
+      # Pinned, so a twelve-bravo merge cannot change what this gate accepts.
+      #
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - name: Checkout twelve-bravo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -114,6 +115,32 @@ jobs:
           path: ${{ inputs.also-root-repo }}
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
+
+      # No vendor directory, so its modules are fetched at run time.
+      #
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - name: Checkout theater-server
+        if: ${{ inputs.theater-server-ref != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: gridwatch/theater-server
+          ref: ${{ inputs.theater-server-ref }}
+          path: theater-server
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      # After every checkout, before either `go run`.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::the validators need the repo-access App token for the private gridwatch modules"
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
@@ -141,38 +168,11 @@ jobs:
             --pooled-sections "${POOLED_SECTIONS}" \
             "${also_root[@]}"
 
-      # theater-server gitignores its vendor directory (it is a container prebuild artifact), and
-      # go-cli-app, go-server and design-system are private, so this needs the token rewrite. The
-      # public module proxy answering for them today is a cache of when they were public, not a
-      # guarantee.
-      - name: Checkout theater-server
-        if: ${{ inputs.theater-server-ref != '' }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: gridwatch/theater-server
-          ref: ${{ inputs.theater-server-ref }}
-          path: theater-server
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: false
-
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         if: ${{ inputs.theater-server-ref != '' }}
         with:
           go-version-file: theater-server/go.mod
-
-      - name: Configure private module access
-        if: ${{ inputs.theater-server-ref != '' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::content validate needs the repo-access App token for the private gridwatch modules"
-            exit 1
-          fi
-          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
       - name: Run theater-server content validate
         if: ${{ inputs.theater-server-ref != '' }}
