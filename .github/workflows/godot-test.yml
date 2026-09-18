@@ -288,7 +288,10 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: twelve-bravo
+          # twelve-bravo is checked out; go-cli-app is the private module it imports.
+          repositories: |
+            twelve-bravo
+            go-cli-app
           permission-contents: read
 
       - name: Check the inputs
@@ -327,6 +330,19 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           path: twelve-bravo
           persist-credentials: false
+
+      # After every checkout, before `go run`.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::the validator needs the repo-access App token for the private gridwatch modules"
+            exit 1
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
