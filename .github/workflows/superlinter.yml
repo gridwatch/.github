@@ -27,7 +27,7 @@ permissions:
 jobs:
   superlinter:
     name: superlinter
-    uses: gridwatch/.github/.github/workflows/superlinter-prose.yml@a28ffc1406d945d76db723930ffff901e42f2dc8  # v20260917-3
+    uses: gridwatch/.github/.github/workflows/superlinter-prose.yml@e61d59f75dd80634050830b544b793795b823d3c  # v20260918-1
     with:
       copy-yamllint-config: true
       filter-regex-exclude: '(Taskfile\.yml|tooling/|_vendor/|\.specify/|specs/|\.claude/)'
