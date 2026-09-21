@@ -67,6 +67,14 @@ on:
           private gridwatch VCS packages.
         type: boolean
         default: false
+      free-disk-space:
+        description: >-
+          Delete the runner's preinstalled toolchains (.NET, Android,
+          Haskell, CodeQL, Boost, Swift) and cached Docker images before
+          the build. docling-worker's CUDA base plus torch's NVIDIA wheels
+          ran a standard runner out of disk during `pip install`.
+        type: boolean
+        default: false
     secrets:
       # The registry this builds into, set on each container repo by
       # infrastructure-platform.
@@ -118,6 +126,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      # Plain `rm` rather than a marketplace action: nothing to pin, and every
+      # path is a toolchain this job never uses. `df` before and after puts the
+      # gain in the log, so a build that still runs out shows by how much.
+      - name: Free disk space
+        if: inputs.free-disk-space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift
+          sudo docker image prune --all --force > /dev/null
+          df -h /
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
