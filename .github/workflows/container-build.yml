@@ -1,0 +1,78 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+#
+# Builds a repository's image and pushes it nowhere, so a pull request shows
+# that its Containerfile and locked dependencies still build before they
+# merge. container-image, which pushes, runs only on tags.
+#
+# A separate workflow rather than a switch on container-image, on purpose: it
+# takes no secrets, runs in no environment, and holds `contents: read` and
+# nothing else, so it is safe on a pull request from a fork. The inputs that
+# need a credential (vendored private Go modules, composer auth, dhi.io) are
+# therefore not offered; a repository whose build needs one cannot use this.
+
+name: Build Container Image
+
+on:
+  workflow_call:
+    inputs:
+      free-disk-space:
+        description: >-
+          Remove preinstalled toolchains the build never uses before it runs,
+          for images too large for a standard runner's disk (as in
+          container-image).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    # A CUDA base and torch's GPU wheels take a while; a hung build should not
+    # hold a runner for the default six hours.
+    timeout-minutes: 120
+    # A newer push to the same pull request makes this build moot, and the
+    # builds are long, so the older one is cancelled. `github` is the
+    # caller's context here: the group is per repository and per ref, which
+    # for a pull request is its own merge ref.
+    concurrency:
+      group: container-build-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Plain `rm` rather than a marketplace action, as in container-image.
+      - name: Free disk space
+        if: inputs.free-disk-space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift
+          sudo docker image prune --all --force > /dev/null
+          df -h /
+
+      # Same invocation as container-image, minus tags and push: an empty
+      # composer_auth secret is still passed, so a Containerfile that mounts
+      # it unconditionally builds here the way it does there.
+      - name: Build image
+        env:
+          VERSION: pr-${{ github.sha }}
+        run: |
+          COMPOSER_AUTH_FILE=$(mktemp)
+          trap 'rm -f "$COMPOSER_AUTH_FILE"' EXIT
+          DOCKER_BUILDKIT=1 docker build -f Containerfile \
+            --build-arg VERSION="$VERSION" \
+            --secret id=composer_auth,src="$COMPOSER_AUTH_FILE" \
+            .
