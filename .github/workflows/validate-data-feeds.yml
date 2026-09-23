@@ -80,10 +80,15 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          # Three checkouts, then the private Go modules both validators import.
+          # Three checkouts, then the private Go modules both validators import. Both feed
+          # repos are listed because `also-root-repo` names the *other* one: sim-data's caller
+          # checks out world-data and world-data's checks out sim-data, and the token is minted
+          # from this list rather than from the caller, so a repo missing here fails the
+          # checkout of a private repo before 12b runs.
           repositories: |
             twelve-bravo
             theater-server
+            sim-data
             world-data
             go-cli-app
             go-server
