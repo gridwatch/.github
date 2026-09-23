@@ -28,8 +28,11 @@ on:
         required: true
       yaml-collections:
         description: |
-          Space-separated directories of <slug>.yml this repo ships beside its root CSVs (for
-          example 'commanders qrf'). Empty packages only the root CSVs and schemas, which is
+          Space-separated top-level directories this repo ships beside its root CSVs, each
+          packaged whole (sim-data sends 'commanders qrf', world-data 'pft'). A name is the
+          directory a collection path starts at, not the collection itself: 12b derives
+          qrf/cards/ from qrf-card.schema.json and pft/charts/ from pft-chart.schema.json, so
+          the names are qrf and pft. Empty packages only the root CSVs and schemas, which is
           every repo that carries no YAML collection.
         type: string
         default: ''
