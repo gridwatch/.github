@@ -77,7 +77,10 @@ jobs:
             fi
             files+=("${collection}")
           done
-          tar -czf feeds.tar.gz "${files[@]}"
+          # ustar, not GNU tar's default: PHP's PharData cannot read GNU long-name headers
+          # (a path over 100 bytes fails the import), and silently truncates posix/pax names.
+          # ustar splits long paths into prefix and name, and refuses a basename it cannot hold.
+          tar --format=ustar -czf feeds.tar.gz "${files[@]}"
           echo "Packaged ${#files[@]} root entries into feeds.tar.gz ($(stat -c %s feeds.tar.gz) bytes)."
 
       - name: POST to Craft webhook
