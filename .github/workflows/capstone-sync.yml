@@ -29,11 +29,11 @@ on:
       yaml-collections:
         description: |
           Space-separated top-level directories this repo ships beside its root CSVs, each
-          packaged whole (sim-data sends 'commanders qrf', world-data 'pft'). A name is the
-          directory a collection path starts at, not the collection itself: 12b derives
-          qrf/cards/ from qrf-card.schema.json and pft/charts/ from pft-chart.schema.json, so
-          the names are qrf and pft. Empty packages only the root CSVs and schemas, which is
-          every repo that carries no YAML collection.
+          packaged whole (sim-data sends 'commanders qrf', world-data 'fitness'). A name is
+          the directory a collection path starts at, not the collection itself: 12b derives
+          qrf/cards/ from qrf-card.schema.json and fitness/charts/ from
+          fitness-chart.schema.json, so the names are qrf and fitness. Empty packages only the
+          root CSVs and schemas, which is every repo that carries no YAML collection.
         type: string
         default: ''
     secrets:
