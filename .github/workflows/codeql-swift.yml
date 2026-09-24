@@ -77,6 +77,9 @@ jobs:
 
   swift:
     name: swift
+    # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). Unset or
+    # anything but "true" means disabled.
+    if: ${{ vars.MACOS_RUNNERS_ENABLED == 'true' }}
     runs-on: macos-26
     permissions:
       actions: read
