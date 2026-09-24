@@ -42,6 +42,9 @@ permissions:
 jobs:
   test:
     name: test
+    # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). Unset or
+    # anything but "true" means disabled.
+    if: ${{ vars.MACOS_RUNNERS_ENABLED == 'true' }}
     runs-on: macos-26
     # A step `if` cannot read the secrets context, so the two App halves are
     # reduced here to one non-secret boolean the mint step can test.
