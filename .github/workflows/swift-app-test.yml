@@ -66,14 +66,14 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: GridwatchKit,tooling
+          repositories: FDTKit,tooling
           permission-contents: read
 
       - name: Checkout sibling repositories
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/FDTKit.git" ../FDTKit
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
 
       - name: Install XcodeGen
