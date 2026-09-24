@@ -27,14 +27,14 @@ on:
         description: 'JSON array of xcodebuild destinations, each built under the tracer'
         type: string
         required: true
-      gridwatchkit:
-        description: 'Clone GridwatchKit as a sibling before building'
+      fdtkit:
+        description: 'Clone FDTKit as a sibling before building'
         type: boolean
         required: false
         default: false
     secrets:
       # The repo-access App halves, minted below into a per-run token for the
-      # GridwatchKit clone. Optional because only `gridwatchkit` callers need
+      # FDTKit clone. Optional because only `fdtkit` callers need
       # them; such a caller without them fails at the clone rather than
       # analysing a build that cannot compile.
       REPO_ACCESS_APP_CLIENT_ID:
@@ -95,25 +95,25 @@ jobs:
 
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
-        if: ${{ inputs.gridwatchkit && env.APP_AUTH_CONFIGURED == 'true' }}
+        if: ${{ inputs.fdtkit && env.APP_AUTH_CONFIGURED == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: GridwatchKit
+          repositories: FDTKit
           permission-contents: read
 
-      - name: Checkout GridwatchKit
-        if: ${{ inputs.gridwatchkit }}
+      - name: Checkout FDTKit
+        if: ${{ inputs.fdtkit }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::GridwatchKit is private; this run has no REPO_ACCESS_APP_* secrets to clone it"
+            echo "::error::FDTKit is private; this run has no REPO_ACCESS_APP_* secrets to clone it"
             exit 1
           fi
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/GridwatchKit.git" ../GridwatchKit
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/FDTKit.git" ../FDTKit
 
       - name: Install XcodeGen
         if: ${{ inputs.project != '' }}
