@@ -110,6 +110,10 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(inputs.runners) }}
+    # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). A
+    # non-macOS leg (windows-latest) is unaffected. Unset or anything but
+    # "true" means disabled.
+    if: ${{ !contains(matrix.os, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
@@ -368,7 +372,10 @@ jobs:
 
   coverage-gate:
     name: coverage-gate
-    if: inputs.coverage-floor > 0
+    # Skipped alongside its source leg when that leg is macOS and macOS runners
+    # are disabled — the artifact it downloads would not exist. See AGENTS.md
+    # (macOS runner gate).
+    if: inputs.coverage-floor > 0 && (!contains(inputs.coverage-from-runner, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true')
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -463,7 +470,9 @@ jobs:
 
   build-macos:
     name: build-macos
-    if: inputs.macos-export-preset != ''
+    # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). Unset or
+    # anything but "true" means disabled.
+    if: inputs.macos-export-preset != '' && vars.MACOS_RUNNERS_ENABLED == 'true'
     needs: test
     runs-on: macos-14
     timeout-minutes: 30
