@@ -14,7 +14,7 @@ on:
 # Per-SHA on push, per-ref on pull request. A ref-keyed group on push makes runs
 # for different commits cancel each other and leaves the tip's checks cancelled.
 concurrency:
-  group: ${{ github.repository }}-superlinter-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-superlinter-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 # The PR summary comment posts via the Issues API, so it needs issues:write,
