@@ -24,7 +24,7 @@ on:
 # different commits cancel each other, and a burst of pushes can then leave a
 # branch tip holding `cancelled` checks.
 concurrency:
-  group: ${{ github.repository }}-terraform-docs-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-terraform-docs-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
