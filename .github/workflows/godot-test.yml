@@ -98,6 +98,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-godot-test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -118,6 +127,9 @@ jobs:
     timeout-minutes: 20
 
     env:
+      # The caller's weekly schedule fills the caches instead of testing; it
+      # is the only run that saves one.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
       # Must match the project's Godot.NET.Sdk exactly, not just major.minor:
       # the headless import rewrites the csproj to its own version when they
       # differ, and a locked-mode restore then fails NU1004.
@@ -135,11 +147,22 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
+
+      # NuGet's package folder, restore-only; setup-dotnet's own cache would
+      # save on every run. The lock files pin every package, so a key is
+      # written once.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore NuGet packages
+        id: nuget-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
@@ -212,17 +235,28 @@ jobs:
           if (-not $exe) { throw "Godot .exe not found under godot-bin/" }
           "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # The one cache writer: the weekly run on main, for a key it has not saved
+      # yet. A pull request only restores, so it can never write what main
+      # later reads.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Godot
+        if: env.WARM_CACHE == 'true' && steps.godot-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: godot-bin
+          key: ${{ steps.godot-cache.outputs.cache-primary-key }}
+
       # The first pass can exit non-zero on half-written metadata (a known 4.x
       # headless quirk); the second must succeed.
       - name: Godot import (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.WARM_CACHE != 'true'
         shell: bash
         run: |
           "$GODOT_BIN" --headless --import || true
           "$GODOT_BIN" --headless --import
 
       - name: Godot import (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.WARM_CACHE != 'true'
         shell: pwsh
         run: |
           & $env:GODOT_BIN --headless --import
@@ -236,11 +270,21 @@ jobs:
         run: dotnet restore --locked-mode
         timeout-minutes: 5
 
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save NuGet packages
+        if: env.WARM_CACHE == 'true' && steps.nuget-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: ${{ steps.nuget-cache.outputs.cache-primary-key }}
+
       - name: Build
+        if: env.WARM_CACHE != 'true'
         run: dotnet build --configuration Release --no-restore -clp:NoSummary
         timeout-minutes: 5
 
       - name: Test
+        if: env.WARM_CACHE != 'true'
         shell: bash
         env:
           TEST_PROJECT: ${{ inputs.test-project }}
@@ -256,7 +300,7 @@ jobs:
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        if: always()
+        if: always() && env.WARM_CACHE != 'true'
         with:
           name: coverage-${{ matrix.os }}
           path: artifacts/test-results/**/coverage.cobertura.xml
@@ -264,7 +308,7 @@ jobs:
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        if: always()
+        if: always() && env.WARM_CACHE != 'true'
         with:
           name: test-results-${{ matrix.os }}
           path: artifacts/test-results/**/*.trx
@@ -349,10 +393,25 @@ jobs:
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: twelve-bravo/go.mod
-          cache-dependency-path: twelve-bravo/go.sum
+          cache: false
+
+      # twelve-bravo is a pinned commit, so the ref fixes everything this
+      # compiles; restore-only, like every cache in this workflow.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore Go cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-12b-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.twelve-bravo-ref }}
+          restore-keys: |
+            go-12b-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-
 
       - name: Validate
         shell: bash
@@ -370,12 +429,23 @@ jobs:
               --schemas "$GITHUB_WORKSPACE/${SCHEMA_DIR}"
           done
 
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Go cache
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
   coverage-gate:
     name: coverage-gate
     # Skipped alongside its source leg when that leg is macOS and macOS runners
     # are disabled — the artifact it downloads would not exist. See AGENTS.md
     # (macOS runner gate).
-    if: inputs.coverage-floor > 0 && (!contains(inputs.coverage-from-runner, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true')
+    # A warm run uploads no coverage, so it has nothing to gate either.
+    if: inputs.coverage-floor > 0 && github.event_name != 'schedule' && (!contains(inputs.coverage-from-runner, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true')
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -478,6 +548,9 @@ jobs:
     timeout-minutes: 30
     env:
       GODOT_VERSION: ${{ inputs.godot-version }}
+      # The caller's weekly schedule fills the caches instead of testing; it
+      # is the only run that saves one.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -488,12 +561,23 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
+
+      # NuGet's package folder, restore-only; setup-dotnet's own cache would
+      # save on every run. The lock files pin every package, so a key is
+      # written once.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore NuGet packages
+        id: nuget-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       # Same key as the test job, so the editor is downloaded once per run.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
@@ -502,14 +586,18 @@ jobs:
       # The editor alone cannot export; the templates are a separate ~1GB
       # download on their own key.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: export-templates
         with:
           path: ~/Library/Application Support/Godot/export_templates
           key: godot-templates-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-macos
 
+      # Cache hits come in through the environment, never spliced into the script.
       - name: Install Godot and the export templates
         shell: bash
+        env:
+          EDITOR_CACHED: ${{ steps.godot-cache.outputs.cache-hit }}
+          TEMPLATES_CACHED: ${{ steps.export-templates.outputs.cache-hit }}
         run: |
           set -euo pipefail
           RELEASE_URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
@@ -530,7 +618,7 @@ jobs:
             fi
           }
 
-          if [ "${{ steps.godot-cache.outputs.cache-hit }}" != "true" ]; then
+          if [ "${EDITOR_CACHED}" != "true" ]; then
             EDITOR_ZIP="Godot_v${GODOT_VERSION}-stable_mono_macos.universal.zip"
             curl -fL -o godot.zip "${RELEASE_URL}/${EDITOR_ZIP}"
             verify "${EDITOR_ZIP}" godot.zip
@@ -540,7 +628,7 @@ jobs:
           fi
           echo "GODOT_BIN=$(pwd)/godot-bin/Godot_mono.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
 
-          if [ "${{ steps.export-templates.outputs.cache-hit }}" != "true" ]; then
+          if [ "${TEMPLATES_CACHED}" != "true" ]; then
             TPZ="Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
             curl -fL -o templates.tpz "${RELEASE_URL}/${TPZ}"
             verify "${TPZ}" templates.tpz
@@ -552,13 +640,31 @@ jobs:
             mv tpz/templates/* "${DEST}/"
           fi
 
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Godot
+        if: env.WARM_CACHE == 'true' && steps.godot-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: godot-bin
+          key: ${{ steps.godot-cache.outputs.cache-primary-key }}
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save the export templates
+        if: env.WARM_CACHE == 'true' && steps.export-templates.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/Library/Application Support/Godot/export_templates
+          key: ${{ steps.export-templates.outputs.cache-primary-key }}
+
       - name: Import
+        if: env.WARM_CACHE != 'true'
         shell: bash
         run: |
           "$GODOT_BIN" --headless --import || true
           "$GODOT_BIN" --headless --import
 
       - name: Export
+        if: env.WARM_CACHE != 'true'
         shell: bash
         env:
           PRESET: ${{ inputs.macos-export-preset }}
@@ -573,6 +679,7 @@ jobs:
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: env.WARM_CACHE != 'true'
         with:
           name: macos-build
           path: ${{ inputs.export-output-dir }}
@@ -586,6 +693,9 @@ jobs:
     timeout-minutes: 30
     env:
       GODOT_VERSION: ${{ inputs.godot-version }}
+      # The caller's weekly schedule fills the caches instead of testing; it
+      # is the only run that saves one.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -596,26 +706,41 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
+
+      # NuGet's package folder, restore-only; setup-dotnet's own cache would
+      # save on every run. The lock files pin every package, so a key is
+      # written once.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore NuGet packages
+        id: nuget-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       # Same key as the test job, so the editor is downloaded once per run.
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: godot-cache
         with:
           path: godot-bin
           key: godot-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-${{ runner.os }}
 
       # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: export-templates
         with:
           path: ${{ runner.temp }}\godot-templates
           key: godot-templates-${{ inputs.cache-suffix }}-${{ env.GODOT_VERSION }}-windows
 
+      # Cache hits come in through the environment, never spliced into the script.
       - name: Install Godot and the export templates
         shell: pwsh
+        env:
+          EDITOR_CACHED: ${{ steps.godot-cache.outputs.cache-hit }}
+          TEMPLATES_CACHED: ${{ steps.export-templates.outputs.cache-hit }}
         run: |
           $ErrorActionPreference = 'Stop'
           $releaseUrl = "https://github.com/godotengine/godot/releases/download/$($env:GODOT_VERSION)-stable"
@@ -629,7 +754,7 @@ jobs:
             if ($actual -ne $expected) { throw "SHA-512 mismatch for $name" }
           }
 
-          if ("${{ steps.godot-cache.outputs.cache-hit }}" -ne "true") {
+          if ($env:EDITOR_CACHED -ne "true") {
             $editorZip = "Godot_v$($env:GODOT_VERSION)-stable_mono_win64.zip"
             Invoke-WebRequest -Uri "$releaseUrl/$editorZip" -OutFile godot.zip
             Confirm-Sha512 $editorZip godot.zip
@@ -640,7 +765,7 @@ jobs:
           "GODOT_BIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           $dest = "$env:APPDATA\Godot\export_templates\$($env:GODOT_VERSION).stable.mono"
-          if ("${{ steps.export-templates.outputs.cache-hit }}" -ne "true") {
+          if ($env:TEMPLATES_CACHED -ne "true") {
             $tpz = "Godot_v$($env:GODOT_VERSION)-stable_mono_export_templates.tpz"
             Invoke-WebRequest -Uri "$releaseUrl/$tpz" -OutFile templates.tpz
             Confirm-Sha512 $tpz templates.tpz
@@ -654,7 +779,24 @@ jobs:
             Copy-Item -Recurse -Force "$env:RUNNER_TEMP\godot-templates\*" $dest
           }
 
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Godot
+        if: env.WARM_CACHE == 'true' && steps.godot-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: godot-bin
+          key: ${{ steps.godot-cache.outputs.cache-primary-key }}
+
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save the export templates
+        if: env.WARM_CACHE == 'true' && steps.export-templates.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}\godot-templates
+          key: ${{ steps.export-templates.outputs.cache-primary-key }}
+
       - name: Import
+        if: env.WARM_CACHE != 'true'
         shell: pwsh
         run: |
           & $env:GODOT_BIN --headless --import
@@ -663,6 +805,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Godot import failed after retry (exit $LASTEXITCODE)" }
 
       - name: Export
+        if: env.WARM_CACHE != 'true'
         shell: pwsh
         env:
           PRESET: ${{ inputs.windows-export-preset }}
@@ -676,6 +819,7 @@ jobs:
 
       # see: https://github.com/actions/upload-artifact/releases/tag/v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: env.WARM_CACHE != 'true'
         with:
           name: windows-build
           path: ${{ inputs.export-output-dir }}
