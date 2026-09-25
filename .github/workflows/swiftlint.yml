@@ -23,6 +23,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-swiftlint-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -34,6 +43,8 @@ jobs:
     # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      # The caller's nightly schedule is the only run that saves a cache.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -58,15 +69,28 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
 
+      # The release archive is cached, never the unpacked binary, so the
+      # checksum below verifies a restored copy exactly as it does a download.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore SwiftLint archive
+        id: swiftlint-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/swiftlint-release
+          key: swiftlint-${{ runner.os }}-0.65.0-79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b
+
       - name: Install SwiftLint
         env:
           SWIFTLINT_VERSION: "0.65.0"
           SWIFTLINT_SHA256: "79306a34e5c7cc55a220cd108cbb861dcad5f10138dcdf261e2624ae8b0a486b"
         run: |
-          install_dir="$(mktemp -d)"
-          zip="${install_dir}/swiftlint.zip"
-          curl -fsSL "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip" -o "${zip}"
+          zip="${HOME}/.cache/swiftlint-release/swiftlint.zip"
+          if [ ! -f "${zip}" ]; then
+            mkdir -p "${HOME}/.cache/swiftlint-release"
+            curl -fsSL "https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/swiftlint_linux_amd64.zip" -o "${zip}"
+          fi
           echo "${SWIFTLINT_SHA256}  ${zip}" | sha256sum -c -
+          install_dir="$(mktemp -d)"
           mkdir -p "${install_dir}/bin"
           unzip -q -j "${zip}" swiftlint-static -d "${install_dir}/bin"
           mv "${install_dir}/bin/swiftlint-static" "${install_dir}/bin/swiftlint"
@@ -76,6 +100,7 @@ jobs:
       # A path containing "Tests" lints against swiftlint-tests.yml (relaxed
       # rules for idiomatic test patterns); everything else uses the main config.
       - name: Run SwiftLint
+        if: env.WARM_CACHE != 'true'
         env:
           LINT_PATHS: ${{ inputs.paths }}
         run: |
@@ -94,3 +119,13 @@ jobs:
           if [ "${#test_paths[@]}" -gt 0 ]; then
             swiftlint lint --strict --config ../tooling/swiftlint-tests.yml "${test_paths[@]}"
           fi
+
+      # The one cache writer: the nightly run on main, once per release. A
+      # pull request only restores.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save SwiftLint archive
+        if: env.WARM_CACHE == 'true' && steps.swiftlint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/swiftlint-release
+          key: ${{ steps.swiftlint-cache.outputs.cache-primary-key }}
