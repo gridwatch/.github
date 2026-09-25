@@ -11,6 +11,15 @@ name: Swift Package Test
 on:
   workflow_call:
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-swift-test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -21,13 +30,47 @@ jobs:
     # anything but "true" means disabled.
     if: ${{ vars.MACOS_RUNNERS_ENABLED == 'true' }}
     runs-on: macos-26
+    env:
+      # The caller's weekly schedule builds and saves instead of testing.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
+      # SwiftPM's whole build directory: dependency checkouts and their
+      # compiled products. The package's own sources are rebuilt regardless,
+      # because checkout stamps them newer than anything restored, so the
+      # saving is in dependencies, which is where it is large. Saved keys carry
+      # a run ID, so the newest weekly build for these manifests wins.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore SwiftPM build
+        id: swiftpm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-
+
       # The runner's own Xcode toolchain — Package.swift asks for
       # swift-tools-version 6.2, so an open-source install buys nothing.
       - name: Run tests
+        if: env.WARM_CACHE != 'true'
         run: swift test
+
+      - name: Build tests
+        if: env.WARM_CACHE == 'true'
+        run: swift build --build-tests
+
+      # The one cache writer: the weekly run on main. A pull request only
+      # restores, so it can never write what main later reads.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save SwiftPM build
+        if: env.WARM_CACHE == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .build
+          key: ${{ steps.swiftpm-cache.outputs.cache-primary-key }}-${{ github.run_id }}
