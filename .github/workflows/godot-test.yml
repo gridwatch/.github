@@ -111,18 +111,41 @@ permissions:
   contents: read
 
 jobs:
+  # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). A job-level
+  # `if` cannot read `matrix`, and GitHub rejects the whole file when one does,
+  # so the macOS legs are dropped from the runner list here instead. Unset or
+  # anything but "true" means disabled.
+  runners:
+    name: runners
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      os: ${{ steps.filter.outputs.os }}
+    steps:
+      - id: filter
+        env:
+          RUNNERS: ${{ inputs.runners }}
+          MACOS_RUNNERS_ENABLED: ${{ vars.MACOS_RUNNERS_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "${MACOS_RUNNERS_ENABLED}" = "true" ]; then
+            os="$(jq -c . <<<"${RUNNERS}")"
+          else
+            os="$(jq -c 'map(select(contains("macos") | not))' <<<"${RUNNERS}")"
+          fi
+          echo "os=${os}" >> "${GITHUB_OUTPUT}"
+
   test:
     # The matrix dimension too: a constant name labels every runner's check
     # identically, so a failed one cannot be told from the rest.
     name: test (${{ matrix.os }})
+    needs: runners
+    # An empty matrix is an error, not a skip.
+    if: needs.runners.outputs.os != '[]'
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.runners) }}
-    # Org-wide macOS runner switch; see AGENTS.md (macOS runner gate). A
-    # non-macOS leg (windows-latest) is unaffected. Unset or anything but
-    # "true" means disabled.
-    if: ${{ !contains(matrix.os, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true' }}
+        os: ${{ fromJSON(needs.runners.outputs.os) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
