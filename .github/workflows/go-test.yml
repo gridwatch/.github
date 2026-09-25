@@ -51,6 +51,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-go-test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -62,6 +71,9 @@ jobs:
     # reduced here to one non-secret boolean the mint step's `if` can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      # The caller's nightly schedule warms the cache instead of testing; see
+      # the save step at the end for why it is the only run that writes one.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -75,6 +87,28 @@ jobs:
       - name: Checkout test harness
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
+      # The token reaches only what this run clones or fetches: tooling, the
+      # caller's siblings, and every gridwatch module go.mod requires. A
+      # pruned module graph lists every module a build needs, so go.mod is
+      # the whole set; the module's own path is left out.
+      - name: List private repositories
+        id: private-repos
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CLONE_ASSETS: ${{ inputs.clone-assets }}
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          {
+            echo tooling
+            for mod in ${SIBLING_MODULES}; do echo "${mod}"; done
+            if [ "${CLONE_ASSETS}" = "true" ]; then echo assets; fi
+            if [ "${CLONE_REGISTRIES}" = "true" ]; then echo registries; fi
+            grep -v '^module ' go.mod | grep -oE 'github\.com/gridwatch/[A-Za-z0-9._-]+' | sed 's|.*/||' || true
+          } | sort -u | paste -sd, - | sed 's/^/list=/' >> "$GITHUB_OUTPUT"
+
       # Per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
@@ -85,6 +119,7 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.private-repos.outputs.list }}
           permission-contents: read
 
       - name: Checkout sibling repositories
@@ -112,10 +147,28 @@ jobs:
           fi
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      # setup-go's own cache saves on every run, pull requests included; the
+      # restore below replaces it.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: ${{ inputs.working-directory }}/go.mod
-          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+          cache: false
+
+      # Restore-only. Saved keys carry a run ID suffix, so the primary key never
+      # matches and the newest nightly for this go.sum wins, then any older one.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore Go cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles(format('{0}/go.sum', inputs.working-directory)) }}
+          restore-keys: |
+            go-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles(format('{0}/go.sum', inputs.working-directory)) }}-
+            go-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-
 
       # GOPRIVATE keeps gridwatch modules off the public proxy and checksum db.
       # Skipped without a token: the rewrite would break anonymous public fetches.
@@ -142,7 +195,7 @@ jobs:
       # `docker run` rather than `services:`, which cannot be made conditional.
       # Image is an input: stock `postgres` fails a `vector`/`postgis` migration.
       - name: Start Postgres
-        if: inputs.postgres-image != ''
+        if: inputs.postgres-image != '' && env.WARM_CACHE != 'true'
         env:
           POSTGRES_IMAGE: ${{ inputs.postgres-image }}
         run: |
@@ -163,6 +216,7 @@ jobs:
       # mismatch silently skips every database test and still reports passing.
       # goroutineleak.go wraps go test with the leak check `task test` runs locally.
       - name: Run tests
+        if: env.WARM_CACHE != 'true'
         working-directory: ${{ inputs.working-directory }}
         env:
           DATABASE_URL_ENV: ${{ inputs.database-url-env }}
@@ -179,7 +233,7 @@ jobs:
           go run "${GITHUB_WORKSPACE}/../fleet-config/goroutineleak.go" -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Enforce coverage threshold
-        if: inputs.coverage-threshold > 0
+        if: inputs.coverage-threshold > 0 && env.WARM_CACHE != 'true'
         working-directory: ${{ inputs.working-directory }}
         env:
           COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
@@ -202,3 +256,27 @@ jobs:
               echo "::error::coverage ${total}% is below the ${COVERAGE_THRESHOLD}% threshold"
               exit 1
             }
+
+      # Compiles every test binary with the flags above and runs none of them,
+      # which fills the build cache without needing Postgres or a green suite.
+      # The leak wrapper is left out: its overlay differs per run, so nothing
+      # it compiles could be reused anyway.
+      - name: Warm build cache
+        if: env.WARM_CACHE == 'true'
+        working-directory: ${{ inputs.working-directory }}
+        run: go test -race -count=1 -exec /bin/true ./...
+
+      # The one cache writer: the nightly run on main. A pull request only
+      # restores, so it can neither poison what main reads nor spend the
+      # repository's cache quota on branch-scoped copies. A public repository
+      # saves nothing once the App token was minted, or private module source
+      # would be restorable by any fork's pull request.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Go cache
+        if: env.WARM_CACHE == 'true' && (github.event.repository.private || steps.app-token.outcome != 'success')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}-${{ github.run_id }}
