@@ -85,6 +85,23 @@ jobs:
           # `git describe` cannot see tags in a shallow clone.
           fetch-depth: 0
 
+      # Scopes the token to tooling, the caller's siblings and every gridwatch
+      # module go.mod requires, as in go-test.
+      - name: List private repositories
+        id: private-repos
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        env:
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          {
+            echo tooling
+            for mod in ${SIBLING_MODULES}; do echo "${mod}"; done
+            if [ "${CLONE_REGISTRIES}" = "true" ]; then echo registries; fi
+            grep -v '^module ' go.mod | grep -oE 'github\.com/gridwatch/[A-Za-z0-9._-]+' | sed 's|.*/||' || true
+          } | sort -u | paste -sd, - | sed 's/^/list=/' >> "$GITHUB_OUTPUT"
+
       # Per-run installation token for the private gridwatch Go modules.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
@@ -95,6 +112,7 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.private-repos.outputs.list }}
           permission-contents: read
 
       - name: Checkout sibling repositories
@@ -112,10 +130,15 @@ jobs:
             git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/registries.git" ../registries
           fi
 
+      # No cache, deliberately: this job publishes, and anything it restored
+      # was written by a run that executed third-party code. Caches are for
+      # the test and lint workflows, where a poisoned entry cannot ship.
+      #
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
 
       # GOPRIVATE keeps gridwatch modules off the public proxy and checksum db;
       # the rewrite gives git the token it needs to fetch them.
