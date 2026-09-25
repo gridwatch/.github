@@ -46,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.repository }}-codeql-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-codeql-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -118,16 +118,30 @@ jobs:
           fi
           git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/FDTKit.git" ../FDTKit
 
+      # The release archive is cached, never the unpacked binary, so the
+      # checksum below verifies a restored copy exactly as it does a download.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore XcodeGen archive
+        id: xcodegen-cache
+        if: ${{ inputs.project != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/xcodegen
+          key: xcodegen-2.46.0-4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+
       - name: Install XcodeGen
         if: ${{ inputs.project != '' }}
         env:
           XCODEGEN_VERSION: "2.46.0"
           XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
         run: |
-          install_dir="$(mktemp -d)"
-          zip="${install_dir}/xcodegen.zip"
-          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${zip}"
+          zip="${HOME}/.cache/xcodegen/xcodegen.zip"
+          if [ ! -f "${zip}" ]; then
+            mkdir -p "${HOME}/.cache/xcodegen"
+            curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${zip}"
+          fi
           echo "${XCODEGEN_SHA256}  ${zip}" | shasum -a 256 -c -
+          install_dir="$(mktemp -d)"
           unzip -q "${zip}" -d "${install_dir}"
           echo "${install_dir}/xcodegen/bin" >> "${GITHUB_PATH}"
 
@@ -152,6 +166,19 @@ jobs:
             echo "no committed Package.resolved — resolving from project.yml ranges"
           fi
 
+      # The package cache swift-app-test's weekly run saves, restore-only: this
+      # workflow never writes one. Same path and key, so the two share an entry;
+      # the resolve below moves it out of the workspace before the tracer starts.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore cached Swift packages
+        if: ${{ inputs.project != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .spm-cache
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('project.yml', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ github.repository }}-
+
       # Resolved before init so the tracer never sees the clones, and into
       # RUNNER_TEMP so dependency sources stay outside the analysed tree.
       # `-packageAuthorizationProvider netrc` keeps xcodebuild off the Keychain.
@@ -162,6 +189,7 @@ jobs:
           SCHEME: ${{ inputs.scheme }}
           GIT_TERMINAL_PROMPT: '0'
         run: |
+          if [ -d .spm-cache ]; then mv .spm-cache "${RUNNER_TEMP}/spm"; fi
           args=(-scheme "${SCHEME}")
           if [ -n "${PROJECT}" ]; then args+=(-project "${PROJECT}"); fi
           xcodebuild "${args[@]}" \
