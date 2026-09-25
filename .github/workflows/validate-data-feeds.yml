@@ -48,6 +48,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-validate-data-feeds-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -59,6 +68,9 @@ jobs:
     # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      # The caller's nightly schedule validates as usual and then saves the
+      # cache; it is the only run that writes one.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # persist-credentials: false so the token backing the checkout below is
       # never written into a .git/config the `go run` step could read back.
@@ -147,10 +159,30 @@ jobs:
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
 
+      # setup-go's own cache would look for a go.sum at the workspace root,
+      # which holds none, and save on every run; the restore below replaces it.
+      #
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: twelve-bravo/go.mod
+          cache: false
+
+      # Both validators are pinned commits, so the modules and the compiled
+      # packages they need are fixed by the two refs: an exact hit leaves
+      # each validator only a link to do. Keyed on the refs, not on go.sum.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore Go cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-feeds-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.twelve-bravo-ref }}-${{ inputs.theater-server-ref }}
+          restore-keys: |
+            go-feeds-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-
 
       - name: Run 12b feeds validate
         working-directory: twelve-bravo
@@ -178,8 +210,22 @@ jobs:
         if: ${{ inputs.theater-server-ref != '' }}
         with:
           go-version-file: theater-server/go.mod
+          cache: false
 
       - name: Run theater-server content validate
         if: ${{ inputs.theater-server-ref != '' }}
         working-directory: theater-server
         run: go run ./cmd/server content validate --dir ../feeds
+
+      # The one cache writer: the nightly run on main, once per pair of refs,
+      # whether or not the feeds validated, since the cache holds only what the
+      # validators compiled. A pull request only restores.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Go cache
+        if: ${{ !cancelled() && env.WARM_CACHE == 'true' && steps.go-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
