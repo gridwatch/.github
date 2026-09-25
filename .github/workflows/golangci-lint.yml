@@ -39,6 +39,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-golangci-lint-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -50,6 +59,8 @@ jobs:
     # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      # The caller's nightly schedule is the only run that saves a cache.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -61,16 +72,36 @@ jobs:
       - name: Checkout lint config
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
+      # Scopes the token to the caller's siblings and every gridwatch module
+      # go.mod requires, as in go-test.
+      - name: List private repositories
+        id: private-repos
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          {
+            for mod in ${SIBLING_MODULES}; do echo "${mod}"; done
+            if [ "${CLONE_REGISTRIES}" = "true" ]; then echo registries; fi
+            grep -v '^module ' go.mod | grep -oE 'github\.com/gridwatch/[A-Za-z0-9._-]+' | sed 's|.*/||' || true
+          } | sort -u | paste -sd, - | sed 's/^/list=/' >> "$GITHUB_OUTPUT"
+
       # Mints a per-run installation token for the private gridwatch Go modules.
+      # Skipped when nothing private is needed: an empty list would widen the
+      # token to every repository the App is installed on.
       #
       # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
       - id: app-token
-        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' && steps.private-repos.outputs.list != '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.private-repos.outputs.list }}
           permission-contents: read
 
       - name: Checkout sibling repositories
@@ -93,9 +124,27 @@ jobs:
           fi
 
       # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      # setup-go's own cache saves on every run; the restore below replaces it.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: ${{ inputs.working-directory }}/go.mod
+          cache: false
+
+      # Restore-only, keyed like go-test's but separately: lint type-checks
+      # without -race, so the two build caches share nothing worth merging.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore Go cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-lint-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles(format('{0}/go.sum', inputs.working-directory)) }}
+          restore-keys: |
+            go-lint-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles(format('{0}/go.sum', inputs.working-directory)) }}-
+            go-lint-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-
 
       # GOPRIVATE keeps gridwatch modules off the public proxy and checksum
       # database; the rewrite gives git the token. Skipped without one, or an
@@ -131,6 +180,9 @@ jobs:
           args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ./...
           version: "v2.13.1"
           working-directory: ${{ inputs.working-directory }}
+          # The action restores its analysis cache on every run but saves it
+          # only from the nightly one, like the Go cache around it.
+          skip-save-cache: ${{ env.WARM_CACHE != 'true' }}
 
       # golangci-lint reads the code; govulncheck reads what the code calls.
       # Both run locally in `task lint-go`, so CI must run both too.
@@ -143,3 +195,15 @@ jobs:
           # caller's go directive fetches that toolchain here instead of failing to build.
           GOTOOLCHAIN: auto
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+      # The one cache writer; see go-test for why, and for the public-repository
+      # guard. govulncheck above has built its own tool into the same cache.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Go cache
+        if: ${{ !cancelled() && env.WARM_CACHE == 'true' && (github.event.repository.private || steps.app-token.outcome != 'success') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}-${{ github.run_id }}
