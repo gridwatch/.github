@@ -24,6 +24,15 @@ on:
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-vale-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -35,6 +44,8 @@ jobs:
     # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      # The caller's nightly schedule is the only run that saves a cache.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -67,15 +78,28 @@ jobs:
             git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/tooling.git" ../tooling
           fi
 
+      # The release archive is cached, never the unpacked binary, so the
+      # checksum below verifies a restored copy exactly as it does a download.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore Vale archive
+        id: vale-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/vale-release
+          key: vale-${{ runner.os }}-3.21.0-96997d19a4ca6981673b0d4c5ca7f3ede4a9f97964a96edc29fba9e28a328336
+
       - name: Install Vale
         env:
           VALE_VERSION: "3.21.0"
           VALE_SHA256: "96997d19a4ca6981673b0d4c5ca7f3ede4a9f97964a96edc29fba9e28a328336"
         run: |
-          install_dir="$(mktemp -d)"
-          tarball="${install_dir}/vale.tar.gz"
-          curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" -o "${tarball}"
+          tarball="${HOME}/.cache/vale-release/vale.tar.gz"
+          if [ ! -f "${tarball}" ]; then
+            mkdir -p "${HOME}/.cache/vale-release"
+            curl -fsSL "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz" -o "${tarball}"
+          fi
           echo "${VALE_SHA256}  ${tarball}" | sha256sum -c -
+          install_dir="$(mktemp -d)"
           mkdir -p "${install_dir}/bin"
           tar -xzf "${tarball}" -C "${install_dir}/bin" vale
           echo "${install_dir}/bin" >> "${GITHUB_PATH}"
@@ -84,6 +108,7 @@ jobs:
       # shared config. `vale sync` fetches the style packages, gitignored in
       # tooling and so absent from the fresh clone.
       - name: Run Vale
+        if: env.WARM_CACHE != 'true'
         env:
           VALE_GLOB: ${{ inputs.glob }}
         run: |
@@ -93,3 +118,13 @@ jobs:
           fi
           vale sync --config "${config}"
           vale --config "${config}" --glob "${VALE_GLOB}" .
+
+      # The one cache writer: the nightly run on main, once per release. A
+      # pull request only restores.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Vale archive
+        if: env.WARM_CACHE == 'true' && steps.vale-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/vale-release
+          key: ${{ steps.vale-cache.outputs.cache-primary-key }}
