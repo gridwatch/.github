@@ -26,8 +26,8 @@ Version-pinning is a foundational aspect of this goal.
 
 Terraform Core is pinned to a **major-version range** with a specific minor-version floor:
 
-* starts at the minor-version release currently adopted across all workspaces (e.g. `>= 1.14.0`)
-* ends by excluding the next major-version release (e.g. `< 2.0.0`)
+* starts at the minor-version release currently adopted across all workspaces (for example, `>= 1.14.0`)
+* ends by excluding the next major-version release (for example, `< 2.0.0`)
 
 ```hcl
 required_version = ">= 1.14.0, < 2.0.0"
@@ -43,8 +43,8 @@ This range is declared in the `terraform` stanza of every `terraform.tf`.
 
 Providers are pinned to a **major-version range** with a specific patch-version floor:
 
-* starts at an exact known-good patch release (e.g. `>= 6.13.0`)
-* ends by excluding the next major-version release (e.g. `< 7.0.0`)
+* starts at an exact known-good patch release (for example, `>= 6.13.0`)
+* ends by excluding the next major-version release (for example, `< 7.0.0`)
 * **uses `>=`, never `~>`** — the pessimistic operator masks intentional major-version holds
 
 ```hcl
@@ -81,7 +81,7 @@ Container images and release tags use **date-based versions**, not semantic vers
 vYYYYMMDD-N
 ```
 
-where `N` is a sequential build number for that day (e.g. `v20260321-1`, `v20260321-2`). The `v` prefix is required on both git tags and container image tags.
+where `N` is a sequential build number for that day (for example, `v20260321-1`, `v20260321-2`). The `v` prefix is required on both git tags and container image tags.
 
 Never push `latest` to a registry. Always use an explicit `vYYYYMMDD-N` tag.
 
