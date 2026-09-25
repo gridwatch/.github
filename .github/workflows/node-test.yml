@@ -24,7 +24,7 @@ on:
 # branch tip holding `cancelled` checks. The caller's workflow name is in the
 # group too, or two callers in one repo cancel each other and skip a deploy.
 concurrency:
-  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -34,6 +34,9 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    env:
+      # The caller's nightly schedule installs and saves instead of testing.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -41,21 +44,48 @@ jobs:
           persist-credentials: false
 
       # see: https://github.com/actions/setup-node/releases/tag/v7.0.0
+      # No `cache:` here: setup-node's cache saves on every run. The restore
+      # below reads the one the nightly run saves.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-          cache: npm
+          package-manager-cache: false
 
-      - run: npm ci
+      # npm's download cache, not node_modules: `npm ci` deletes node_modules
+      # first, so only the tarballs survive it. The lockfile pins every one,
+      # so a key is written once and an exact hit needs no save.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore npm cache
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ inputs.node-version }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-${{ inputs.node-version }}-
+
+      - run: npm ci --prefer-offline --no-audit --no-fund
       - run: npm run lint
+        if: env.WARM_CACHE != 'true'
       - run: npm test -- --coverage --coverage.reporter=text --coverage.reporter=json-summary
-        if: inputs.coverage
+        if: inputs.coverage && env.WARM_CACHE != 'true'
 
       - run: npm test
-        if: ${{ !inputs.coverage }}
+        if: ${{ !inputs.coverage && env.WARM_CACHE != 'true' }}
+
+      # The one cache writer: the nightly run on main, and only for a lockfile
+      # it has not saved yet. A pull request only restores, so it can never
+      # write what main later reads.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save npm cache
+        if: env.WARM_CACHE == 'true' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.npm
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
 
       - name: Coverage summary
-        if: inputs.coverage && always()
+        if: inputs.coverage && always() && env.WARM_CACHE != 'true'
         run: |
           if [ ! -f ./coverage/coverage-summary.json ]; then
             echo "## Test Coverage" >> "$GITHUB_STEP_SUMMARY"
