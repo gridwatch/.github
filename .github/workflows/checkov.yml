@@ -11,6 +11,15 @@ name: Checkov
 on:
   workflow_call:
 
+# SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
+# branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
+# (Workflow concurrency). The caller's workflow name keeps two callers in one
+# repo apart, and the event keeps the nightly cache warm from cancelling a
+# push run on the same commit.
+concurrency:
+  group: ${{ github.repository }}-checkov-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
