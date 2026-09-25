@@ -36,6 +36,9 @@ jobs:
         with:
           ref: craft-export
           fetch-depth: 0
+          # The push below passes the token itself, so no step before it can
+          # read a credential out of .git/config.
+          persist-credentials: false
 
       # An App token, because the automatic GITHUB_TOKEN cannot open pull
       # requests here: the org sets can_approve_pull_request_reviews = false.
@@ -90,6 +93,8 @@ jobs:
           echo "reconcile clean: $(wc -l < /tmp/expected.txt) record(s)"
 
       - name: Commit normalization
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -99,7 +104,7 @@ jobs:
             exit 0
           fi
           git commit -am "chore: normalize exported JSON"
-          git push
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:craft-export
 
       # The App token, not GITHUB_TOKEN: the automatic one cannot open the PR.
       - name: Open or update the pull request
