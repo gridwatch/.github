@@ -44,7 +44,7 @@ on:
 # branch tip holding `cancelled` checks. The caller's workflow name is in the
 # group too, or two callers in one repo cancel each other.
 concurrency:
-  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ${{ github.repository }}-test-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -54,6 +54,10 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    env:
+      # The caller's nightly schedule builds and saves the virtualenv instead
+      # of testing.
+      WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -66,32 +70,63 @@ jobs:
       - name: Checkout lint config
         run: git clone --depth 1 --branch main --single-branch https://github.com/gridwatch/.github.git ../fleet-config
 
+      # No `cache:` here: setup-python's cache saves on every run and holds
+      # only wheels. The restore below brings back the built virtualenv.
+      #
       # see: https://github.com/actions/setup-python/releases/tag/v7.0.0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
-          cache: pip
-          cache-dependency-path: ${{ inputs.requirements }}
+
+      # The virtualenv and pip's wheel cache together. An exact hit skips the
+      # install outright. The key carries the full patch version, because a
+      # venv links to the interpreter that built it and a runner image with a
+      # new patch release would leave it pointing at nothing. A prefix hit
+      # brings back an older venv, which is thrown away, and its wheels, which
+      # are not. Outside the workspace, so neither ruff nor pytest walks it.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Restore virtualenv
+        id: venv-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/venv
+            ~/.cache/pip
+          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-ruff0.16.7-${{ hashFiles(inputs.requirements) }}
+          restore-keys: |
+            venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-ruff0.16.7-
+            venv-${{ runner.os }}-
 
       # ruff is installed from a pin here rather than through a third-party
       # action, so the version CI lints with is the one `locals.tf` names and
       # nothing else enters the supply chain to get it.
       - name: Install dependencies
         env:
+          CACHE_HIT: ${{ steps.venv-cache.outputs.cache-hit }}
           REQUIREMENTS: ${{ inputs.requirements }}
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -r "${REQUIREMENTS}"
-          python -m pip install "ruff==0.16.7"
+          venv="${HOME}/venv"
+          if [ "${CACHE_HIT}" != "true" ]; then
+            rm -rf "${venv}"
+            python -m venv "${venv}"
+            "${venv}/bin/python" -m pip install --upgrade pip
+            "${venv}/bin/python" -m pip install -r "${REQUIREMENTS}"
+            "${venv}/bin/python" -m pip install "ruff==0.16.7"
+          fi
+          echo "VIRTUAL_ENV=${venv}" >> "${GITHUB_ENV}"
+          echo "${venv}/bin" >> "${GITHUB_PATH}"
 
       # Anchored to github.workspace: `../fleet-config` is relative to the
       # checkout root, and a bare relative path breaks under any other
       # working directory.
       - name: Lint
+        if: env.WARM_CACHE != 'true'
         run: ruff check --config "${{ github.workspace }}/../fleet-config/ruff.toml" .
 
       - name: Run tests
+        if: env.WARM_CACHE != 'true'
         env:
           COVERAGE_PACKAGE: ${{ inputs.coverage-package }}
         run: |
@@ -106,7 +141,7 @@ jobs:
       # SDK and Docling adapters, which need a live backend and a GPU; a
       # threshold over them would measure the wrong thing.
       - name: Coverage summary
-        if: inputs.coverage-package != '' && always()
+        if: inputs.coverage-package != '' && always() && env.WARM_CACHE != 'true'
         run: |
           set -euo pipefail
           if [ ! -f .coverage ]; then
@@ -119,3 +154,16 @@ jobs:
             echo
             python -m coverage report --format=markdown
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The one cache writer: the nightly run on main, for a key it has not
+      # saved yet. A pull request only restores, so it can never write what
+      # main later reads.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save virtualenv
+        if: env.WARM_CACHE == 'true' && steps.venv-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/venv
+            ~/.cache/pip
+          key: ${{ steps.venv-cache.outputs.cache-primary-key }}
