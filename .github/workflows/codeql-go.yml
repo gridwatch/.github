@@ -1,0 +1,233 @@
+---
+
+# Managed by gridwatch/infrastructure-github.
+# Manual edits will be overwritten on the next `terraform apply`.
+#
+# Action pins live in its `locals.tf`. Never merge a Dependabot pull request
+# against this file; bump the pin there instead.
+#
+# Advanced setup rather than default setup, which cannot download the private
+# gridwatch modules and analyses without their types; see AGENTS.md (CodeQL for Go).
+
+name: CodeQL Go
+
+on:
+  workflow_call:
+    inputs:
+      clone-registries:
+        description: 'Clone the registries repo (server-loaded YAML) as a sibling directory'
+        type: boolean
+        default: false
+      javascript:
+        description: 'Also analyse javascript-typescript, which default setup covered in these repos'
+        type: boolean
+        default: false
+      setup-command:
+        description: 'Shell command to run after checkout, before the build (e.g. copy registry data for go:embed)'
+        type: string
+        default: ''
+      sibling-modules:
+        description: 'Space-separated repo names to clone as sibling directories (go.mod replace targets)'
+        type: string
+        default: ''
+      upload:
+        description: >-
+          Upload the results. False analyses without uploading, for a trial run
+          in a repository whose configuration still has default setup enabled,
+          which rejects an advanced-setup upload.
+        type: boolean
+        default: true
+    secrets:
+      # Optional so a repository with no private modules still runs; one that
+      # needs them and lacks the secrets fails at the build, not in the analysis.
+      REPO_ACCESS_APP_CLIENT_ID:
+        required: false
+      REPO_ACCESS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+# See infrastructure-github AGENTS.md (Workflow concurrency).
+concurrency:
+  group: ${{ github.repository }}-codeql-go-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  actions:
+    name: actions
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    timeout-minutes: 15
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: actions
+          build-mode: none
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:actions
+          upload: ${{ inputs.upload && 'always' || 'never' }}
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    # A step `if` cannot read the secrets context, so the two App halves are
+    # reduced here to one non-secret boolean the mint step's condition can test.
+    env:
+      APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+    timeout-minutes: 30
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Scopes the token to the caller's siblings and every gridwatch module
+      # go.mod requires, as in golangci-lint.
+      - name: List private repositories
+        id: private-repos
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' }}
+        env:
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          {
+            for mod in ${SIBLING_MODULES}; do echo "${mod}"; done
+            if [ "${CLONE_REGISTRIES}" = "true" ]; then echo registries; fi
+            grep -v '^module ' go.mod | grep -oE 'github\.com/gridwatch/[A-Za-z0-9._-]+' | sed 's|.*/||' || true
+          } | sort -u | paste -sd, - | sed 's/^/list=/' >> "$GITHUB_OUTPUT"
+
+      # Skipped when nothing private is needed: an empty list would widen the
+      # token to every repository the App is installed on.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ env.APP_AUTH_CONFIGURED == 'true' && steps.private-repos.outputs.list != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.private-repos.outputs.list }}
+          permission-contents: read
+
+      - name: Checkout sibling repositories
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLONE_REGISTRIES: ${{ inputs.clone-registries }}
+          SIBLING_MODULES: ${{ inputs.sibling-modules }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIBLING_MODULES}" ] && [ "${CLONE_REGISTRIES}" != "true" ]; then
+            exit 0
+          fi
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::sibling repositories are private; this run has no REPO_ACCESS_APP_* secrets to clone them"
+            exit 1
+          fi
+          for mod in ${SIBLING_MODULES}; do
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/${mod}.git" "../${mod}"
+          done
+          if [ "${CLONE_REGISTRIES}" = "true" ]; then
+            git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/gridwatch/registries.git" ../registries
+          fi
+
+      # setup-go's own cache saves on every run, so it is off; nothing here
+      # restores one either, since the traced build compiles everything anyway.
+      #
+      # see: https://github.com/actions/setup-go/releases/tag/v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # GOPRIVATE keeps gridwatch modules off the public proxy and checksum
+      # database; the rewrite gives git the token. Skipped without one, or an
+      # empty credential turns a public module's anonymous clone into a 401.
+      - name: Configure private module access
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "no repo-access App token; leaving module resolution on the public proxy"
+            exit 0
+          fi
+          echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      # Before init, so the tracer never sees the dependency fetch and a missing
+      # module fails here, by name, rather than as untyped extraction.
+      - name: Download modules
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: go mod download
+
+      # Via the environment, so the command's text is never parsed as script.
+      # `-e` is restated: the default shell applies it to the outer script only.
+      - name: Run setup command
+        if: inputs.setup-command != ''
+        env:
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: bash -eo pipefail -c "$SETUP_COMMAND"
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: go
+          build-mode: manual
+
+      - name: Build
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: go build ./...
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:go
+          upload: ${{ inputs.upload && 'always' || 'never' }}
+
+  javascript:
+    name: javascript
+    if: ${{ inputs.javascript }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    timeout-minutes: 15
+    steps:
+      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: javascript-typescript
+          build-mode: none
+
+      # see: https://github.com/github/codeql-action/releases/tag/v4.38.0
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:javascript-typescript
+          upload: ${{ inputs.upload && 'always' || 'never' }}
