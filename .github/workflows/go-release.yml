@@ -63,6 +63,20 @@ on:
       # read solely by the goreleaser path. Optional: `go build` never reads it.
       PACKAGE_REPO_TOKEN:
         required: false
+      # Developer ID signing identity (base64 .p12 and its password) and the
+      # App Store Connect API key (base64 .p8, key ID, issuer ID) a config's
+      # `notarize` block reads. Optional: a config enables it only when all
+      # five are non-empty, so a caller passing none still releases unsigned.
+      MACOS_SIGN_P12:
+        required: false
+      MACOS_SIGN_PASSWORD:
+        required: false
+      MACOS_NOTARY_KEY:
+        required: false
+      MACOS_NOTARY_KEY_ID:
+        required: false
+      MACOS_NOTARY_ISSUER_ID:
+        required: false
 
 permissions:
   contents: read
@@ -72,9 +86,11 @@ jobs:
     name: release
     runs-on: ubuntu-latest
     # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here to one non-secret boolean the mint step's `if` can test.
+    # reduced here to one non-secret boolean the mint step's `if` can test, and
+    # the five MACOS_* secrets to one the tag check below tests.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      MACOS_SIGNING_PASSED: ${{ secrets.MACOS_SIGN_P12 != '' || secrets.MACOS_SIGN_PASSWORD != '' || secrets.MACOS_NOTARY_KEY != '' || secrets.MACOS_NOTARY_KEY_ID != '' || secrets.MACOS_NOTARY_ISSUER_ID != '' }}
     # id-token: keyless cosign in a goreleaser config signs with this run's OIDC token.
     permissions:
       contents: write
@@ -86,6 +102,27 @@ jobs:
           persist-credentials: false
           # `git describe` cannot see tags in a shallow clone.
           fetch-depth: 0
+
+      # The caller accepts any `v*` tag, and write access is enough to tag an
+      # unmerged commit whose `.goreleaser.yaml` would then run with the signing
+      # identity and the notary key. A run that carries any MACOS_* secret must
+      # therefore be a vYYYYMMDD-N tag on main, as in macos-release-sign.
+      - name: Check the tag before signing
+        if: ${{ env.MACOS_SIGNING_PASSED == 'true' }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" != "tag" ] || ! printf '%s' "${TAG}" | grep -Eq '^v[0-9]{8}-[0-9]+$'; then
+            echo "::error::${TAG} is not a vYYYYMMDD-N tag; refusing to sign it"
+            exit 1
+          fi
+          commit=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          if ! git merge-base --is-ancestor "${commit}" refs/remotes/origin/main; then
+            echo "::error::${TAG} (${commit}) is not on main; refusing to sign it"
+            exit 1
+          fi
+          echo "${TAG} is ${commit}, on main"
 
       # Scopes the token to tooling, the caller's siblings and every gridwatch
       # module go.mod requires, as in go-test.
@@ -270,11 +307,20 @@ jobs:
 
       # `release --clean` rebuilds what `build` produced: goreleaser cannot
       # publish an existing dist/.
+      #
+      # The MACOS_* secrets reach this step only, never `goreleaser build`:
+      # `build` has no --skip=notarize, and each tag should be submitted to
+      # Apple once, for the binaries that are actually published.
       - name: Publish with goreleaser
         if: ${{ inputs.goreleaser }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PACKAGE_REPO_TOKEN: ${{ secrets.PACKAGE_REPO_TOKEN }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: goreleaser release --clean
 
       - name: Publish the release
