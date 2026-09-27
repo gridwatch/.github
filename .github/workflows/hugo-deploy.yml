@@ -20,6 +20,14 @@ on:
         required: true
       CLOUDFLARE_ACCOUNT_ID:
         required: true
+      # Sites that read CAPSTONE at build time (terminology-website) pass these;
+      # every other site leaves them unset and never reads them.
+      CAPSTONE_GRAPHQL_TOKEN:
+        required: false
+      CAPSTONE_CF_ACCESS_CLIENT_ID:
+        required: false
+      CAPSTONE_CF_ACCESS_CLIENT_SECRET:
+        required: false
 
 permissions:
   contents: read
@@ -47,6 +55,10 @@ jobs:
           extended: true
 
       - name: Build
+        env:
+          CAPSTONE_GRAPHQL_TOKEN: ${{ secrets.CAPSTONE_GRAPHQL_TOKEN }}
+          CAPSTONE_CF_ACCESS_CLIENT_ID: ${{ secrets.CAPSTONE_CF_ACCESS_CLIENT_ID }}
+          CAPSTONE_CF_ACCESS_CLIENT_SECRET: ${{ secrets.CAPSTONE_CF_ACCESS_CLIENT_SECRET }}
         run: hugo
 
       # wrangler-action spawns `command` directly (no shell), so the branch name
