@@ -37,7 +37,7 @@ on:
         type: string
         required: true
       source-name:
-        description: 'Name recorded in the SBOM for the scanned source tree (e.g. Verda)'
+        description: 'Name recorded in the SBOM for the scanned source tree (e.g. Vanter)'
         type: string
         required: true
 
