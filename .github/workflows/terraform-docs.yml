@@ -33,7 +33,7 @@ permissions:
 jobs:
   terraform-docs:
     name: terraform-docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
