@@ -54,7 +54,7 @@ concurrency:
 jobs:
   sign:
     name: sign
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # contents: write uploads the three assets and publishes the draft;
     # id-token: write is the OIDC token cosign trades for a Fulcio
     # certificate. Nothing else is granted.
