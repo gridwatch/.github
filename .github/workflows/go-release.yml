@@ -94,7 +94,7 @@ permissions:
 jobs:
   release:
     name: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # A step `if` cannot read the secrets context, so each App's two halves are
     # reduced here to one non-secret boolean its mint step's `if` can test, and
     # the five MACOS_* secrets to one the tag check below tests.
