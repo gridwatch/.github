@@ -35,7 +35,7 @@ permissions:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # A CUDA base and torch's GPU wheels take a while; a hung build should not
     # hold a runner for the default six hours.
     timeout-minutes: 120
