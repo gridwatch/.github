@@ -106,7 +106,7 @@ permissions:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: production
     # ACR_NAME arrives as a secret rather than a literal: infrastructure-platform
     # owns the registry, and a hardcoded name is a second source of truth that a
