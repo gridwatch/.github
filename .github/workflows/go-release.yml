@@ -59,8 +59,18 @@ on:
         required: false
       REPO_ACCESS_APP_PRIVATE_KEY:
         required: false
-      # Contents + PRs write on gridwatch/homebrew-tap and scoop-bucket only,
-      # read solely by the goreleaser path. Optional: `go build` never reads it.
+      # The FDT Package Publisher App halves: installed on gridwatch/homebrew-tap
+      # and scoop-bucket only, minted below into a per-run token for the cask
+      # and manifest pull requests. GitHub signs an App token's API commits, so
+      # those pull requests pass the signed-commit rule. Optional: `go build`
+      # never reads them.
+      PACKAGES_APP_CLIENT_ID:
+        required: false
+      PACKAGES_APP_PRIVATE_KEY:
+        required: false
+      # The fine-grained PAT the App replaces, read only when the App
+      # halves are absent. Its commits are unsigned, so their pull requests
+      # stay blocked; removed once every packages repo passes the App.
       PACKAGE_REPO_TOKEN:
         required: false
       # Developer ID signing identity (base64 .p12 and its password) and the
@@ -85,11 +95,12 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
-    # A step `if` cannot read the secrets context, so the two App halves are
-    # reduced here to one non-secret boolean the mint step's `if` can test, and
+    # A step `if` cannot read the secrets context, so each App's two halves are
+    # reduced here to one non-secret boolean its mint step's `if` can test, and
     # the five MACOS_* secrets to one the tag check below tests.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
+      PACKAGES_APP_CONFIGURED: ${{ secrets.PACKAGES_APP_CLIENT_ID != '' && secrets.PACKAGES_APP_PRIVATE_KEY != '' }}
       MACOS_SIGNING_PASSED: ${{ secrets.MACOS_SIGN_P12 != '' || secrets.MACOS_SIGN_PASSWORD != '' || secrets.MACOS_NOTARY_KEY != '' || secrets.MACOS_NOTARY_KEY_ID != '' || secrets.MACOS_NOTARY_ISSUER_ID != '' }}
     # id-token: keyless cosign in a goreleaser config signs with this run's OIDC token.
     permissions:
@@ -305,6 +316,22 @@ jobs:
           fi
           echo "stamp verified in ${checked} binaries"
 
+      # Per-run token for the cask and manifest pull requests, scoped to the two
+      # package repositories. Both permissions are requested explicitly: a token
+      # without `permission-*` inputs inherits the whole installation.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: package-token
+        if: ${{ inputs.goreleaser && env.PACKAGES_APP_CONFIGURED == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.PACKAGES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PACKAGES_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap,scoop-bucket
+          permission-contents: write
+          permission-pull-requests: write
+
       # `release --clean` rebuilds what `build` produced: goreleaser cannot
       # publish an existing dist/.
       #
@@ -315,7 +342,7 @@ jobs:
         if: ${{ inputs.goreleaser }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PACKAGE_REPO_TOKEN: ${{ secrets.PACKAGE_REPO_TOKEN }}
+          PACKAGE_REPO_TOKEN: ${{ steps.package-token.outputs.token || secrets.PACKAGE_REPO_TOKEN }}
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
