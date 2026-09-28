@@ -117,7 +117,7 @@ jobs:
   # anything but "true" means disabled.
   runners:
     name: runners
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       os: ${{ steps.filter.outputs.os }}
@@ -342,7 +342,7 @@ jobs:
   schema-validate:
     name: schema-validate
     if: inputs.schema-validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # A step `if` cannot read the secrets context, so the two App halves are
     # reduced here to one non-secret boolean the mint step can test.
@@ -470,7 +470,7 @@ jobs:
     # A warm run uploads no coverage, so it has nothing to gate either.
     if: inputs.coverage-floor > 0 && github.event_name != 'schedule' && (!contains(inputs.coverage-from-runner, 'macos') || vars.MACOS_RUNNERS_ENABLED == 'true')
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
