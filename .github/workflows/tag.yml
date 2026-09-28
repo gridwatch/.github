@@ -58,7 +58,7 @@ jobs:
     # writes a tag with `contents: write`, and a tag on an unmerged commit is
     # one every caller could pin, so the ref is checked rather than assumed.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       # The org default for GITHUB_TOKEN is read, so the tag write is asked for
       # here or the run fails at the API call rather than earlier.
