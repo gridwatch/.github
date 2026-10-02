@@ -43,6 +43,10 @@ on:
         description: 'Directory holding go.mod, when the module is not at the repository root (e.g. `tools`).'
         type: string
         default: '.'
+      post-test-command:
+        description: 'Shell command to run from the repository root once the tests and the coverage gate pass (e.g. a shell test suite that `task test` runs locally)'
+        type: string
+        default: ''
     secrets:
       # Optional so forks and public repos still run — a fork PR receives no
       # secrets. Every step needing the token is guarded on it being set.
@@ -256,6 +260,15 @@ jobs:
               echo "::error::coverage ${total}% is below the ${COVERAGE_THRESHOLD}% threshold"
               exit 1
             }
+
+      # A repository's tests that are not Go tests — flightline's shell suite for its Ansible role —
+      # so the one `test` check covers everything `task test` runs locally. Same shape as the
+      # setup command: via the environment, `-e` restated. Skipped on the warm run, like the tests.
+      - name: Run post-test command
+        if: inputs.post-test-command != '' && env.WARM_CACHE != 'true'
+        env:
+          POST_TEST_COMMAND: ${{ inputs.post-test-command }}
+        run: bash -eo pipefail -c "$POST_TEST_COMMAND"
 
       # Compiles every test binary with the flags above and runs none of them,
       # which fills the build cache without needing Postgres or a green suite.
