@@ -47,6 +47,22 @@ on:
         description: 'Shell command to run from the repository root once the tests and the coverage gate pass (e.g. a shell test suite that `task test` runs locally)'
         type: string
         default: ''
+      skip-packages:
+        description: >-
+          Space-separated package directories, relative to the module root,
+          left out of the tests along with everything below them (e.g.
+          `internal/benchmarks`), for a fork of an upstream module that carries
+          a package this runner cannot build. Empty tests every package.
+        type: string
+        default: ''
+      race:
+        description: >-
+          Run the tests under the race detector, as `task test` does. Off only
+          for a fork of an upstream module whose dependencies fail it for
+          reasons the module cannot fix: `-race` also turns on checkptr, which
+          stops a dependency's unsafe pointer arithmetic.
+        type: boolean
+        default: true
     secrets:
       # Optional so forks and public repos still run — a fork PR receives no
       # secrets. Every step needing the token is guarded on it being set.
@@ -216,6 +232,37 @@ jobs:
           docker logs ci-postgres
           exit 1
 
+      # The packages the test and warm steps below build: every one, or every
+      # one outside skip-packages. `go list -e` lists a package it cannot load
+      # too, such as one importing something this runner lacks, and still exits
+      # zero, so a skipped one is dropped here; one that stays fails in the
+      # tests below.
+      - name: Select packages
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          SKIP_PACKAGES: ${{ inputs.skip-packages }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SKIP_PACKAGES}" ]; then
+            echo "GO_TEST_PACKAGES=./..." >> "$GITHUB_ENV"
+            exit 0
+          fi
+          module="$(go list -m)"
+          packages="$(go list -e ./... | awk -v module="${module}" -v skip="${SKIP_PACKAGES}" '
+            BEGIN { n = split(skip, dirs, " ") }
+            {
+              for (i = 1; i <= n; i++) {
+                prefix = module "/" dirs[i]
+                if ($0 == prefix || index($0, prefix "/") == 1) next
+              }
+              print
+            }' | paste -sd ' ' -)"
+          if [ -z "${packages// /}" ]; then
+            echo "::error::skip-packages leaves no package to test"
+            exit 1
+          fi
+          echo "GO_TEST_PACKAGES=${packages}" >> "$GITHUB_ENV"
+
       # Repo-chosen variable name: these suites skip when it is unset, so a
       # mismatch silently skips every database test and still reports passing.
       # goroutineleak.go wraps go test with the leak check `task test` runs locally.
@@ -225,6 +272,7 @@ jobs:
         env:
           DATABASE_URL_ENV: ${{ inputs.database-url-env }}
           POSTGRES_IMAGE: ${{ inputs.postgres-image }}
+          RACE: ${{ inputs.race }}
         run: |
           set -euo pipefail
           if [ -n "${DATABASE_URL_ENV}" ] && [ -z "${POSTGRES_IMAGE}" ]; then
@@ -234,7 +282,12 @@ jobs:
           if [ -n "${DATABASE_URL_ENV}" ]; then
             export "${DATABASE_URL_ENV}=postgres://test:test@localhost:5432/test?sslmode=disable"
           fi
-          go run "${GITHUB_WORKSPACE}/../fleet-config/goroutineleak.go" -race -count=1 -coverprofile=coverage.out ./...
+          read -ra packages <<< "${GO_TEST_PACKAGES}"
+          flags=(-count=1 -coverprofile=coverage.out)
+          if [ "${RACE}" = "true" ]; then
+            flags=(-race "${flags[@]}")
+          fi
+          go run "${GITHUB_WORKSPACE}/../fleet-config/goroutineleak.go" "${flags[@]}" "${packages[@]}"
 
       - name: Enforce coverage threshold
         if: inputs.coverage-threshold > 0 && env.WARM_CACHE != 'true'
@@ -277,7 +330,16 @@ jobs:
       - name: Warm build cache
         if: env.WARM_CACHE == 'true'
         working-directory: ${{ inputs.working-directory }}
-        run: go test -race -count=1 -exec /bin/true ./...
+        env:
+          RACE: ${{ inputs.race }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "${GO_TEST_PACKAGES}"
+          flags=(-count=1 -exec /bin/true)
+          if [ "${RACE}" = "true" ]; then
+            flags=(-race "${flags[@]}")
+          fi
+          go test "${flags[@]}" "${packages[@]}"
 
       # The one cache writer: the nightly run on main. A pull request only
       # restores, so it can neither poison what main reads nor spend the
