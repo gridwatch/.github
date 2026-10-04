@@ -31,6 +31,14 @@ on:
           rather than walked back relatively.
         type: string
         default: '.'
+      new-from-rev:
+        description: >-
+          Report only issues in lines changed since this revision (a tag or
+          commit), for a fork of an upstream module: its own changes are held
+          to the fleet config while the upstream code it carries is not. Empty
+          lints everything.
+        type: string
+        default: ''
     secrets:
       # Optional so public repos and fork pull requests, which receive no
       # secrets, still run; only private sibling checkouts need the token.
@@ -63,8 +71,13 @@ jobs:
       WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
+      # new-from-rev compares against a revision, so that revision and the
+      # history back to it must be in the checkout; every other caller keeps
+      # the default shallow one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          fetch-depth: ${{ inputs.new-from-rev != '' && '0' || '1' }}
+          fetch-tags: ${{ inputs.new-from-rev != '' }}
           persist-credentials: false
 
       # The shared golangci config lives in the public `.github` repository, so
@@ -177,7 +190,7 @@ jobs:
       # see: https://github.com/golangci/golangci-lint-action/releases/tag/v9.3.0
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
         with:
-          args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ./...
+          args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ${{ inputs.new-from-rev != '' && format('--new-from-rev={0}', inputs.new-from-rev) || '' }} ./...
           version: "v2.13.1"
           working-directory: ${{ inputs.working-directory }}
           # The action restores its analysis cache on every run but saves it
