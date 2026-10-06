@@ -29,9 +29,9 @@ on:
         required: true
       also-root-repo:
         description: |
-          Another gridwatch feed repo whose root schemas join 12b's global handle check, by name
-          (for example 'world-data'). Nothing in it is validated and no finding is attributed to
-          it. Empty runs no cross-repo check.
+          Space-separated names of the other gridwatch feed repos whose root schemas join 12b's
+          global handle check (for example 'world-data sim-data'). Nothing in them is validated
+          and no finding is attributed to them. Empty runs no cross-repo check.
         type: string
         default: ''
       theater-server-ref:
@@ -92,15 +92,15 @@ jobs:
           client-id: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_ACCESS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          # Three checkouts, then the private Go modules both validators import. Both feed
-          # repos are listed because `also-root-repo` names the *other* one: sim-data's caller
-          # checks out world-data and world-data's checks out sim-data, and the token is minted
-          # from this list rather than from the caller, so a repo missing here fails the
-          # checkout of a private repo before 12b runs.
+          # Three checkouts, then the private Go modules both validators import. All three feed
+          # repos are listed because `also-root-repo` names the *others*: each caller clones the
+          # rest, and the token is minted from this list rather than from the caller, so a repo
+          # missing here fails the clone of a private repo before 12b runs.
           repositories: |
             twelve-bravo
             theater-server
             sim-data
+            website-data
             world-data
             go-cli-app
             go-server
@@ -119,20 +119,6 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
-      # Deliberately unpinned, unlike the two validators: this is not a gate input but the other
-      # half of a "do these two repos agree right now" question, and pinning it would let a
-      # world-data handle change go unnoticed here until somebody bumped a SHA.
-      #
-      # see: https://github.com/actions/checkout/releases/tag/v7.0.1
-      - name: Checkout the cross-repo handle source
-        if: ${{ inputs.also-root-repo != '' }}
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          repository: gridwatch/${{ inputs.also-root-repo }}
-          path: ${{ inputs.also-root-repo }}
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: false
-
       # No vendor directory, so its modules are fetched at run time.
       #
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -146,7 +132,8 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
 
-      # After every checkout, before either `go run`.
+      # After every checkout, before the handle-source clones below (which rely on it) and
+      # either `go run`.
       - name: Configure private module access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -158,6 +145,25 @@ jobs:
           fi
           echo "GOPRIVATE=github.com/gridwatch/*" >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/gridwatch/".insteadOf "https://github.com/gridwatch/"
+
+      # Deliberately unpinned, unlike the two validators: the other side of a "do the feed repos
+      # agree right now" question, not a gate input. One clone per name, since actions/checkout
+      # takes one repository per step; they use the credential the previous step configured.
+      - name: Checkout the cross-repo handle sources
+        if: ${{ inputs.also-root-repo != '' }}
+        shell: bash
+        env:
+          ALSO_ROOT: ${{ inputs.also-root-repo }}
+        run: |
+          set -euo pipefail
+          read -ra repos <<< "${ALSO_ROOT}"
+          for repo in "${repos[@]}"; do
+            if [[ ! "${repo}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+              echo "::error::also-root-repo holds an invalid repository name: ${repo}"
+              exit 1
+            fi
+            git clone --depth 1 -- "https://github.com/gridwatch/${repo}.git" "${repo}"
+          done
 
       # setup-go's own cache would look for a go.sum at the workspace root,
       # which holds none, and save on every run; the restore below replaces it.
@@ -196,9 +202,10 @@ jobs:
         run: |
           set -euo pipefail
           also_root=()
-          if [[ -n "${ALSO_ROOT}" ]]; then
-            also_root=(--also-root "../${ALSO_ROOT}")
-          fi
+          read -ra repos <<< "${ALSO_ROOT}"
+          for repo in "${repos[@]}"; do
+            also_root+=(--also-root "../${repo}")
+          done
           go run ./cmd/12b feeds validate \
             --root ../feeds \
             --citation-urls "${CITATION_URLS}" \
