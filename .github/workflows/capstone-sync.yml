@@ -36,6 +36,26 @@ on:
           root CSVs and schemas, which is every repo that carries no YAML collection.
         type: string
         default: ''
+      site:
+        description: |
+          Craft site handle the sync imports into (e.g. websiteData), as the status route
+          names it. Required whenever rebuild-sites is set, and must then equal the site query
+          parameter of webhook-url; unused otherwise.
+        type: string
+        default: ''
+      rebuild-sites:
+        description: |
+          Comma-separated repository names whose deploy.yml is dispatched on main once the
+          import job this sync queued is done (e.g. 'fdt-website'). Empty, the default, posts
+          the feed and stops, which is every repo whose import has no completion signal.
+        type: string
+        default: ''
+      wait-seconds:
+        description: |
+          How long to wait for the import job before failing the run. Nothing is rebuilt on
+          a timeout; the sites' daily build is the fallback.
+        type: number
+        default: 600
     secrets:
       CF_ACCESS_CLIENT_ID:
         description: 'Cloudflare Access service-token client ID for the CAPSTONE feeds-sync webhook.'
@@ -43,6 +63,12 @@ on:
       CF_ACCESS_CLIENT_SECRET:
         description: 'Cloudflare Access service-token client secret for the CAPSTONE feeds-sync webhook.'
         required: true
+      REBUILD_APP_CLIENT_ID:
+        description: 'Client ID of the GitHub App that dispatches the dependent sites. Needed only with rebuild-sites.'
+        required: false
+      REBUILD_APP_PRIVATE_KEY:
+        description: 'Private key of the GitHub App that dispatches the dependent sites. Needed only with rebuild-sites.'
+        required: false
 
 permissions:
   contents: read
@@ -52,6 +78,68 @@ jobs:
     name: sync
     runs-on: ubuntu-26.04
     steps:
+      # Before anything is posted: a sync that could not wait for its own import must not run.
+      - name: Check rebuild inputs
+        if: ${{ inputs.rebuild-sites != '' }}
+        env:
+          SITE: ${{ inputs.site }}
+          SITES: ${{ inputs.rebuild-sites }}
+          WAIT_SECONDS: ${{ inputs.wait-seconds }}
+          WEBHOOK_URL: ${{ inputs.webhook-url }}
+          REBUILD_APP_CLIENT_ID: ${{ secrets.REBUILD_APP_CLIENT_ID }}
+          REBUILD_APP_PRIVATE_KEY: ${{ secrets.REBUILD_APP_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SITE}" ]]; then
+            echo "::error::rebuild-sites needs site"
+            exit 1
+          fi
+          # Both end up in a URL or a --repo argument.
+          if [[ ! "${SITE}" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::site must be a Craft site handle (letters, digits, underscores)."
+            exit 1
+          fi
+          # The sync imports into the site webhook-url names and the wait polls the site input.
+          # They must be one site: asked about another site's queue, CAPSTONE answers `done`.
+          # The last `site` wins, as it does when Craft reads the query.
+          url_site=''
+          if [[ "${WEBHOOK_URL}" == *\?* ]]; then
+            query="${WEBHOOK_URL#*\?}"
+            IFS='&' read -r -a params <<< "${query%%#*}"
+            for param in "${params[@]}"; do
+              if [[ "${param}" == site=* ]]; then
+                url_site="${param#site=}"
+              fi
+            done
+          fi
+          if [[ -z "${url_site}" ]]; then
+            echo "::error::rebuild-sites needs a site query parameter in webhook-url: a sync that names no site queues no import."
+            exit 1
+          fi
+          if [[ "${url_site}" != "${SITE}" ]]; then
+            echo "::error::site is '${SITE}', but webhook-url syncs into another site. They must name the same Craft site."
+            exit 1
+          fi
+          # Only tested for presence, never printed. Without them the run would post the feed and
+          # wait for the import before failing at the token mint.
+          if [[ -z "${REBUILD_APP_CLIENT_ID}" ]]; then
+            echo "::error::rebuild-sites needs the REBUILD_APP_CLIENT_ID secret, which is empty or not passed."
+            exit 1
+          fi
+          if [[ -z "${REBUILD_APP_PRIVATE_KEY}" ]]; then
+            echo "::error::rebuild-sites needs the REBUILD_APP_PRIVATE_KEY secret, which is empty or not passed."
+            exit 1
+          fi
+          if [[ ! "${SITES}" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then
+            echo "::error::rebuild-sites must be repository names separated by commas, without spaces."
+            exit 1
+          fi
+          if [[ ! "${WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
+            echo "::error::wait-seconds must be a whole number of seconds."
+            exit 1
+          fi
+
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -120,3 +208,111 @@ jobs:
             echo "::error::Craft webhook returned HTTP ${status}. See response body above for the failing section / reason."
             exit 1
           fi
+
+      # Polls the queue job the sync response names. `waiting` and `reserved` keep polling, `done`
+      # lets the sites rebuild, `failed` fails the run at once. Only this sync's own job id is
+      # asked about: CAPSTONE answers `done` for an id it does not know.
+      - name: Wait for the import
+        id: wait
+        if: ${{ inputs.rebuild-sites != '' }}
+        env:
+          WEBHOOK_URL: ${{ inputs.webhook-url }}
+          SITE: ${{ inputs.site }}
+          WAIT_SECONDS: ${{ inputs.wait-seconds }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CAPSTONE always sends `import`: null when the sync queued nothing, else an object
+          # holding the job id. Anything else is a response this step cannot trust, not "no import".
+          # `none` cannot be a job id: jq passes digits only.
+          job=$(jq -r '
+            if type != "object" or (has("import") | not) then error("no import key")
+            elif .import == null then "none"
+            elif (.import | type) != "object" then error("import is not an object")
+            else .import.jobId
+              | if type == "string" or type == "number" then tostring else error("no job id") end
+              | if test("^[0-9]+$") then . else error("job id is not a number") end
+            end' response.txt 2>/dev/null) || job=''
+          if [[ "${job}" == "none" ]]; then
+            echo "::notice::The sync queued no import, so there is nothing to wait for and no site is rebuilt."
+            echo "queued=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ ! "${job}" =~ ^[0-9]+$ ]]; then
+            echo "::error::The sync response carries neither \"import\": null nor a numeric import job id, so the import cannot be followed. Nothing was rebuilt."
+            exit 1
+          fi
+          base="${WEBHOOK_URL%%\?*}"
+          status_url="${base%/sync}/status?site=${SITE}&job=${job}"
+          deadline=$((SECONDS + WAIT_SECONDS))
+          # The deadline is checked after a poll, not before, so the job is always asked once more
+          # when the time is up.
+          while true; do
+            # curl prints 000 itself when it fails, so the fallback only keeps `set -e` quiet.
+            code=$(curl -sS --max-time 30 -o status.json -w '%{http_code}' \
+              -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+              -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+              "${status_url}" || true)
+            case "${code}" in
+              200)
+                # A 200 that is not the JSON answer (an edge page) is retried like any other miss.
+                state=$(jq -r '.state? // empty' status.json 2>/dev/null || true)
+                echo "job ${job}: ${state:-unreadable}"
+                case "${state}" in
+                  done)
+                    echo "queued=true" >> "${GITHUB_OUTPUT}"
+                    exit 0
+                    ;;
+                  failed)
+                    echo "::error::Import job ${job} failed. Read it in the CAPSTONE queue manager; nothing was rebuilt."
+                    exit 1
+                    ;;
+                esac
+                ;;
+              404)
+                echo "::error::CAPSTONE has no /feeds/status route; its image predates it. Nothing was rebuilt."
+                exit 1
+                ;;
+            esac
+            if (( SECONDS >= deadline )); then
+              break
+            fi
+            sleep 5
+          done
+          echo "::error::Import job ${job} was not done after ${WAIT_SECONDS}s. Nothing was rebuilt; the daily build is the fallback."
+          exit 1
+
+      # An App token, not GITHUB_TOKEN: a dispatch made with GITHUB_TOKEN starts no workflow.
+      #
+      # see: https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+      - id: app-token
+        if: ${{ steps.wait.outputs.queued == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.REBUILD_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REBUILD_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.rebuild-sites }}
+          permission-actions: write
+
+      - name: Rebuild the dependent sites
+        if: ${{ steps.wait.outputs.queued == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+          SITES: ${{ inputs.rebuild-sites }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          for site in ${SITES//,/ }; do
+            if gh workflow run deploy.yml --repo "${OWNER}/${site}" --ref main; then
+              echo "dispatched ${site}"
+            else
+              echo "::error::Could not dispatch deploy.yml on ${site}."
+              failed=1
+            fi
+          done
+          exit "${failed}"
