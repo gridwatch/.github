@@ -189,13 +189,6 @@ jobs:
       #
       # see: https://github.com/golangci/golangci-lint-action/releases/tag/v9.3.0
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
-        # Temporary: the pinned golangci-lint cannot read the export data the
-        # newest Go writes, so it type-checks with the last toolchain it can.
-        # A named toolchain is fetched into ~/go/pkg/mod, which the Go cache
-        # around this step covers, and overrides the `local` setup-go exports.
-        # Removal condition: golangci_lint_go_toolchain in infrastructure-github.
-        env:
-          GOTOOLCHAIN: go1.27.1
         with:
           args: --config ${{ github.workspace }}/../fleet-config/golangci.yml ${{ inputs.new-from-rev != '' && format('--new-from-rev={0}', inputs.new-from-rev) || '' }} ./...
           version: "v2.14.0"
