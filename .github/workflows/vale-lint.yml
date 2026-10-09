@@ -47,7 +47,7 @@ jobs:
       ${{ github.repository_owner == 'gridwatch'
       && github.actor != 'dependabot[bot]'
       && !github.event.pull_request.head.repo.fork }}
-    uses: gridwatch/.github/.github/workflows/vale.yml@64ba55bb44b81ed016f69b5f7e82a17889d64186  # v20261009-4
+    uses: gridwatch/.github/.github/workflows/vale.yml@edaff4be6199b1c71be6ca6fa3aa62c3d78f2e2e  # v20261009-7
     # Passed explicitly, never left to the reusable's default: drift would change
     # what gets linted with nothing in review showing it.
     with:
