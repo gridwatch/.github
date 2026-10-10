@@ -27,8 +27,8 @@ on:
 # SHA for pushes, ref for pull requests, so a burst of pushes cannot leave a
 # branch tip holding `cancelled` checks; see infrastructure-github AGENTS.md
 # (Workflow concurrency). The caller's workflow name keeps two callers in one
-# repo apart, and the event keeps the nightly cache warm from cancelling a
-# push run on the same commit.
+# repo apart, and the event keeps the nightly run from cancelling a push run
+# on the same commit.
 concurrency:
   group: ${{ github.repository }}-vale-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
@@ -44,7 +44,8 @@ jobs:
     # reduced here to one non-secret boolean the mint step's condition can test.
     env:
       APP_AUTH_CONFIGURED: ${{ secrets.REPO_ACCESS_APP_CLIENT_ID != '' && secrets.REPO_ACCESS_APP_PRIVATE_KEY != '' }}
-      # The caller's nightly schedule is the only run that saves a cache.
+      # The caller's nightly schedule is the only run that saves a cache. It
+      # lints as every other run does; the flag gates the save and nothing else.
       WARM_CACHE: ${{ github.event_name == 'schedule' }}
     steps:
       # see: https://github.com/actions/checkout/releases/tag/v7.0.1
@@ -104,11 +105,26 @@ jobs:
           tar -xzf "${tarball}" -C "${install_dir}/bin" vale
           echo "${install_dir}/bin" >> "${GITHUB_PATH}"
 
+      # The one cache writer: the nightly run on main, once per release. A
+      # pull request only restores. Saved before the lint, once the checksum
+      # above has passed, so a failing lint cannot cost the cache.
+      # see: https://github.com/actions/cache/releases/tag/v6.1.0
+      - name: Save Vale archive
+        if: env.WARM_CACHE == 'true' && steps.vale-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/vale-release
+          key: ${{ steps.vale-cache.outputs.cache-primary-key }}
+
       # A repo with its own .vale.ini lints against it; everything else uses the
       # shared config. `vale sync` fetches the style packages, gitignored in
       # tooling and so absent from the fresh clone.
+      #
+      # Runs on every event, the nightly schedule included: the vocabularies and
+      # rules come from the tooling clone above, so they change with no push to
+      # this repository, and the nightly run is the only one that notices. A
+      # red nightly means main fails Vale today.
       - name: Run Vale
-        if: env.WARM_CACHE != 'true'
         env:
           VALE_GLOB: ${{ inputs.glob }}
         run: |
@@ -118,13 +134,3 @@ jobs:
           fi
           vale sync --config "${config}"
           vale --config "${config}" --glob "${VALE_GLOB}" .
-
-      # The one cache writer: the nightly run on main, once per release. A
-      # pull request only restores.
-      # see: https://github.com/actions/cache/releases/tag/v6.1.0
-      - name: Save Vale archive
-        if: env.WARM_CACHE == 'true' && steps.vale-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ~/.cache/vale-release
-          key: ${{ steps.vale-cache.outputs.cache-primary-key }}
