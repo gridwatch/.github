@@ -46,14 +46,17 @@ on:
       rebuild-sites:
         description: |
           Comma-separated repository names whose deploy.yml is dispatched on main once the
-          import job this sync queued is done (e.g. 'fdt-website'). Empty, the default, posts
-          the feed and stops, which is every repo whose import has no completion signal.
+          import this sync queued is done (e.g. 'fdt-website'): its import job, and the Feed Me
+          sequence when the sync response names one. Empty, the default, posts the feed and
+          stops, which is every repo whose import has no completion signal.
         type: string
         default: ''
       wait-seconds:
         description: |
-          How long to wait for the import job before failing the run. Nothing is rebuilt on
-          a timeout; the sites' daily build is the fallback.
+          How long to wait for the import before failing the run. For an import job alone it
+          is a fixed limit. When a Feed Me sequence is followed it is a no-progress limit: it
+          starts again each time the sequence has fewer feeds left. Nothing is rebuilt on a
+          timeout; the sites' daily build is the fallback.
         type: number
         default: 600
     secrets:
@@ -209,9 +212,10 @@ jobs:
             exit 1
           fi
 
-      # Polls the queue job the sync response names. `waiting` and `reserved` keep polling, `done`
-      # lets the sites rebuild, `failed` fails the run at once. Only this sync's own job id is
-      # asked about: CAPSTONE answers `done` for an id it does not know.
+      # Polls the queue job and the Feed Me sequence the sync response names, in one request with
+      # one combined state. `waiting` and `reserved` keep polling, `done` lets the sites rebuild,
+      # `failed` fails the run at once. Only this sync's own job id and sequence key are asked
+      # about: CAPSTONE answers `done` for one it does not know.
       - name: Wait for the import
         id: wait
         if: ${{ inputs.rebuild-sites != '' }}
@@ -235,20 +239,56 @@ jobs:
               | if type == "string" or type == "number" then tostring else error("no job id") end
               | if test("^[0-9]+$") then . else error("job id is not a number") end
             end' response.txt 2>/dev/null) || job=''
-          if [[ "${job}" == "none" ]]; then
+          # `feedMe` names the Feed Me sequence the sync queued for its CSVs. Null, or no key at
+          # all (an image that predates it), is no sequence. Any other shape is not followed.
+          sequence=$(jq -r '
+            if type != "object" then error("not an object")
+            elif (has("feedMe") | not) or .feedMe == null then "none"
+            elif (.feedMe | type) != "object" then error("feedMe is not an object")
+            else .feedMe.sequence
+              | if type == "string" and test("^ds[0-9]+$") then . else error("no sequence key") end
+            end' response.txt 2>/dev/null) || sequence=''
+          if [[ "${job}" != "none" && ! "${job}" =~ ^[0-9]+$ ]]; then
+            echo "::error::The sync response carries neither \"import\": null nor a numeric import job id, so the import cannot be followed. Nothing was rebuilt."
+            exit 1
+          fi
+          if [[ "${sequence}" != "none" && ! "${sequence}" =~ ^ds[0-9]+$ ]]; then
+            echo "::error::The sync response carries a feedMe value this step cannot follow. Nothing was rebuilt."
+            exit 1
+          fi
+          if [[ "${job}" == "none" && "${sequence}" == "none" ]]; then
             echo "::notice::The sync queued no import, so there is nothing to wait for and no site is rebuilt."
             echo "queued=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          if [[ ! "${job}" =~ ^[0-9]+$ ]]; then
-            echo "::error::The sync response carries neither \"import\": null nor a numeric import job id, so the import cannot be followed. Nothing was rebuilt."
-            exit 1
-          fi
           base="${WEBHOOK_URL%%\?*}"
-          status_url="${base%/sync}/status?site=${SITE}&job=${job}"
+          status_url="${base%/sync}/status?site=${SITE}"
+          what=''
+          label=''
+          verb='was'
+          if [[ "${job}" != "none" ]]; then
+            status_url+="&job=${job}"
+            what="Import job ${job}"
+            label="job ${job}"
+          fi
+          if [[ "${sequence}" != "none" ]]; then
+            status_url+="&sequence=${sequence}"
+            if [[ -n "${what}" ]]; then
+              what+=' and '
+              label+=', '
+              verb='were'
+            fi
+            what+="Feed Me sequence ${sequence}"
+            label+="sequence ${sequence}"
+          fi
           deadline=$((SECONDS + WAIT_SECONDS))
-          # The deadline is checked after a poll, not before, so the job is always asked once more
-          # when the time is up.
+          # Fewest feeds the sequence has had left. Only a count below it restarts the deadline,
+          # so a stalled sequence times out and the restarts are bounded by the first count.
+          lowest=''
+          # The count in the newest answer that carried one, for the timeout message.
+          latest=''
+          # The deadline is checked after a poll, not before, so the import is always asked once
+          # more when the time is up.
           while true; do
             # curl prints 000 itself when it fails, so the fallback only keeps `set -e` quiet.
             code=$(curl -sS --max-time 30 -o status.json -w '%{http_code}' \
@@ -259,14 +299,46 @@ jobs:
               200)
                 # A 200 that is not the JSON answer (an edge page) is retried like any other miss.
                 state=$(jq -r '.state? // empty' status.json 2>/dev/null || true)
-                echo "job ${job}: ${state:-unreadable}"
+                echo "${label}: ${state:-unreadable}"
+                # Read only when a sequence is followed, so a job alone keeps its fixed deadline.
+                remaining=''
+                if [[ "${sequence}" != "none" ]]; then
+                  # A JSON number only: the string "0" is not a count.
+                  remaining=$(jq -r '.csv.remaining? | select(type == "number" and . >= 0 and . == floor)' status.json 2>/dev/null || true)
+                  if [[ ! "${remaining}" =~ ^[0-9]+$ ]]; then
+                    remaining=''
+                  else
+                    latest="${remaining}"
+                  fi
+                  if [[ -z "${remaining}" ]]; then
+                    :
+                  elif [[ -z "${lowest}" ]]; then
+                    lowest="${remaining}"
+                    echo "csv: ${remaining} feed(s) left"
+                  elif (( remaining < lowest )); then
+                    lowest="${remaining}"
+                    deadline=$((SECONDS + WAIT_SECONDS))
+                    echo "csv: ${remaining} feed(s) left"
+                  fi
+                fi
                 case "${state}" in
                   done)
+                    # An answer without the count comes from an image that ignored the sequence
+                    # and spoke for the job alone.
+                    if [[ "${sequence}" != "none" && -z "${remaining}" ]]; then
+                      echo "::error::CAPSTONE answered done without reporting on Feed Me sequence ${sequence}, so its import cannot be confirmed. Nothing was rebuilt."
+                      exit 1
+                    fi
+                    # `done` and feeds left contradict each other; trust neither.
+                    if [[ "${sequence}" != "none" ]] && (( remaining != 0 )); then
+                      echo "::error::CAPSTONE answered done with ${remaining} feed(s) left in Feed Me sequence ${sequence}. Nothing was rebuilt."
+                      exit 1
+                    fi
                     echo "queued=true" >> "${GITHUB_OUTPUT}"
                     exit 0
                     ;;
                   failed)
-                    echo "::error::Import job ${job} failed. Read it in the CAPSTONE queue manager; nothing was rebuilt."
+                    echo "::error::${what} failed. Read it in the CAPSTONE queue manager; nothing was rebuilt."
                     exit 1
                     ;;
                 esac
@@ -281,7 +353,15 @@ jobs:
             fi
             sleep 5
           done
-          echo "::error::Import job ${job} was not done after ${WAIT_SECONDS}s. Nothing was rebuilt; the daily build is the fallback."
+          left=''
+          progress=''
+          if [[ "${sequence}" != "none" ]]; then
+            progress=' without progress'
+            if [[ -n "${latest}" ]]; then
+              left=" (${latest} feed(s) left)"
+            fi
+          fi
+          echo "::error::${what}${left} ${verb} not done after ${WAIT_SECONDS}s${progress}. Nothing was rebuilt; the daily build is the fallback."
           exit 1
 
       # An App token, not GITHUB_TOKEN: a dispatch made with GITHUB_TOKEN starts no workflow.
