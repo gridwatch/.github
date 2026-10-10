@@ -81,6 +81,63 @@ jobs:
     name: sync
     runs-on: ubuntu-26.04
     steps:
+      # Each run uploads the whole tree of the commit that triggered it, to production. Two runs
+      # are refused before anything is checked out or posted:
+      #
+      # 1. One started from any ref but the default branch: its data has not merged.
+      # 2. A re-run whose commit is no longer the default branch's tip: it would put an older
+      #    tree over newer data, and in a concurrency group it may have displaced the pending
+      #    sync of a newer commit.
+      #
+      # A first attempt behind the tip is normal and runs: pushes sync in order, and a later
+      # push that touched no feed file starts no sync. It never looks the tip up.
+      #
+      # The run is refused, never pointed at a newer tree: a re-run keeps the caller file and
+      # inputs of its own commit, and a collection missing from an old `yaml-collections` is
+      # one CAPSTONE deletes. The tree and the inputs must come from one commit.
+      #
+      # The lookup needs `contents: read` only, and runs before the checkout because that
+      # persists no credentials.
+      - name: Refuse a stale or off-branch sync
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_REF: ${{ github.ref }}
+          TRIGGER_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEFAULT_BRANCH}" ]]; then
+            echo "::error::This event names no default branch, so the tree to sync is unknown. Nothing was sent."
+            exit 1
+          fi
+          if [[ "${RUN_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "::error::This run was started from ${RUN_REF}. A sync only ever sends ${DEFAULT_BRANCH}, the default branch. Nothing was sent."
+            exit 1
+          fi
+          if [[ ! "${RUN_ATTEMPT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::The run attempt is unknown, so this may be a stale re-run. Nothing was sent."
+            exit 1
+          fi
+          if (( RUN_ATTEMPT == 1 )); then
+            echo "Syncing ${DEFAULT_BRANCH} at ${TRIGGER_SHA:0:7}, the commit that triggered this run."
+            exit 0
+          fi
+          fresh="Start a new sync from ${DEFAULT_BRANCH} with \"Run workflow\": gh workflow run capstone-sync.yml --ref ${DEFAULT_BRANCH}"
+          # `heads/` keeps a tag of the same name out of it.
+          tip=$(gh api "repos/${REPOSITORY}/commits/heads/${DEFAULT_BRANCH}" --jq .sha) || tip=''
+          if [[ ! "${tip}" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::Could not read the tip of ${DEFAULT_BRANCH}, so this re-run (attempt ${RUN_ATTEMPT}) cannot be shown to be current. Nothing was sent. ${fresh}"
+            exit 1
+          fi
+          if [[ "${tip}" != "${TRIGGER_SHA}" ]]; then
+            echo "::error::This re-run (attempt ${RUN_ATTEMPT}) would send ${TRIGGER_SHA:0:7}, but ${DEFAULT_BRANCH} is now at ${tip:0:7}: an older tree over newer data. If syncs queue, it may also have displaced the pending sync of a newer commit. Nothing was sent. ${fresh}"
+            exit 1
+          fi
+          echo "Re-run (attempt ${RUN_ATTEMPT}) of ${TRIGGER_SHA:0:7}, still the tip of ${DEFAULT_BRANCH}."
+
       # Before anything is posted: a sync that could not wait for its own import must not run.
       - name: Check rebuild inputs
         if: ${{ inputs.rebuild-sites != '' }}
