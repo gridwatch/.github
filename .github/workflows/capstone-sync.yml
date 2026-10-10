@@ -47,8 +47,9 @@ on:
         description: |
           Comma-separated repository names whose deploy.yml is dispatched on main once the
           import this sync queued is done (e.g. 'fdt-website'): its import job, and the Feed Me
-          sequence when the sync response names one. Empty, the default, posts the feed and
-          stops, which is every repo whose import has no completion signal.
+          sequence when the sync response names one. A webhook-url that carries feedMe=queue
+          must get a sequence back, or nothing is rebuilt. Empty, the default, posts the feed
+          and stops: nothing is waited for and no site is rebuilt.
         type: string
         default: ''
       wait-seconds:
@@ -81,23 +82,39 @@ jobs:
     name: sync
     runs-on: ubuntu-26.04
     steps:
-      # Each run uploads the whole tree of the commit that triggered it, to production. Two runs
-      # are refused before anything is checked out or posted:
+      # Each run uploads the whole tree of the commit that triggered it, to production. A run is
+      # refused before anything is checked out or posted when either rule holds, on a first
+      # attempt and on a re-run alike:
       #
-      # 1. One started from any ref but the default branch: its data has not merged.
-      # 2. A re-run whose commit is no longer the default branch's tip: it would put an older
-      #    tree over newer data, and in a concurrency group it may have displaced the pending
-      #    sync of a newer commit.
+      # 1. It was started from any ref but the default branch: its data has not merged.
+      # 2. Its commit is not the default branch's tip, and the tip's tree differs in something a
+      #    sync sends: it would put an older tree over newer data. GitHub does not create runs in
+      #    commit order, so in a concurrency group the first attempt for an ancestor can queue
+      #    after the tip's run, displace it as the pending run, and post last.
       #
-      # A first attempt behind the tip is normal and runs: pushes sync in order, and a later
-      # push that touched no feed file starts no sync. It never looks the tip up.
+      # A commit behind the tip still syncs when the two trees are the same to a sync: the tip is
+      # ahead of it and changed no root `*.csv` or `*.schema.json` entry, nothing under a
+      # `yaml-collections` directory, and not the caller file, whose inputs must match the tree.
+      # That is a later push that started no sync of its own, such as one to the docs.
       #
-      # The run is refused, never pointed at a newer tree: a re-run keeps the caller file and
+      # Rule 2 cannot tell whether the newer commit's own sync ran, is queued or was displaced,
+      # so it fails red in each case. That is deliberate: a red run that names the remedy beats
+      # stale data nobody was told about.
+      #
+      # It narrows the gap and does not close it. A run that was the tip when it passed here can
+      # still be posting when a newer commit's sync is displaced by an older one; that older run
+      # is refused, so production keeps this run's tree, one commit behind, until someone starts
+      # the fresh sync the refusal names. Closing it needs CAPSTONE to judge the commit at intake.
+      #
+      # The run is refused, never pointed at a newer tree: a run keeps the caller file and
       # inputs of its own commit, and a collection missing from an old `yaml-collections` is
       # one CAPSTONE deletes. The tree and the inputs must come from one commit.
       #
-      # The lookup needs `contents: read` only, and runs before the checkout because that
-      # persists no credentials.
+      # So every run, a first attempt included, depends on one API call (the tip lookup) and
+      # fails closed without it. That is accepted: the checkout below needs GitHub too, a
+      # refused run has sent nothing, and re-running it passes once the API answers. Both calls
+      # need `contents: read` only, and run before the checkout because that persists no
+      # credentials.
       - name: Refuse a stale or off-branch sync
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -106,6 +123,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_REF: ${{ github.ref }}
           TRIGGER_SHA: ${{ github.sha }}
+          YAML_COLLECTIONS: ${{ inputs.yaml-collections }}
         shell: bash
         run: |
           set -euo pipefail
@@ -117,26 +135,76 @@ jobs:
             echo "::error::This run was started from ${RUN_REF}. A sync only ever sends ${DEFAULT_BRANCH}, the default branch. Nothing was sent."
             exit 1
           fi
-          if [[ ! "${RUN_ATTEMPT}" =~ ^[0-9]+$ ]]; then
-            echo "::error::The run attempt is unknown, so this may be a stale re-run. Nothing was sent."
-            exit 1
-          fi
-          if (( RUN_ATTEMPT == 1 )); then
-            echo "Syncing ${DEFAULT_BRANCH} at ${TRIGGER_SHA:0:7}, the commit that triggered this run."
-            exit 0
-          fi
-          fresh="Start a new sync from ${DEFAULT_BRANCH} with \"Run workflow\": gh workflow run capstone-sync.yml --ref ${DEFAULT_BRANCH}"
+          attempt="(attempt ${RUN_ATTEMPT:-unknown})"
+          fresh="gh workflow run capstone-sync.yml --ref ${DEFAULT_BRANCH}"
           # `heads/` keeps a tag of the same name out of it.
           tip=$(gh api "repos/${REPOSITORY}/commits/heads/${DEFAULT_BRANCH}" --jq .sha) || tip=''
           if [[ ! "${tip}" =~ ^[0-9a-f]{40,64}$ ]]; then
-            echo "::error::Could not read the tip of ${DEFAULT_BRANCH}, so this re-run (attempt ${RUN_ATTEMPT}) cannot be shown to be current. Nothing was sent. ${fresh}"
+            echo "::error::Could not read the tip of ${DEFAULT_BRANCH}, so this run ${attempt} cannot be shown to be current. Nothing was sent. Re-run it, or start a new sync from ${DEFAULT_BRANCH}: ${fresh}"
             exit 1
           fi
-          if [[ "${tip}" != "${TRIGGER_SHA}" ]]; then
-            echo "::error::This re-run (attempt ${RUN_ATTEMPT}) would send ${TRIGGER_SHA:0:7}, but ${DEFAULT_BRANCH} is now at ${tip:0:7}: an older tree over newer data. If syncs queue, it may also have displaced the pending sync of a newer commit. Nothing was sent. ${fresh}"
-            exit 1
+          if [[ "${tip}" == "${TRIGGER_SHA}" ]]; then
+            echo "Syncing ${DEFAULT_BRANCH} at ${TRIGGER_SHA:0:7}, its tip ${attempt}."
+            exit 0
           fi
-          echo "Re-run (attempt ${RUN_ATTEMPT}) of ${TRIGGER_SHA:0:7}, still the tip of ${DEFAULT_BRANCH}."
+          # What the tip has that this commit lacks. A rename counts under both names: the old
+          # one may be a feed file the tip no longer has.
+          comparison=$(gh api "repos/${REPOSITORY}/compare/${TRIGGER_SHA}...${tip}" \
+            --jq '{status: .status, count: (.files | length), names: [.files[] | .filename, (.previous_filename // empty)]}') || comparison=''
+          # One word, never a file name: a name is repository content and must not reach a
+          # workflow command. A collection name is matched as Package feeds reads it, split on
+          # whitespace; one that is not a plain path cannot be matched and counts as a change.
+          # The list stops at 300 files, so a full one may hide a feed file.
+          verdict=$(jq -r --arg collections "${YAML_COLLECTIONS}" '
+            def plain: test("^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$");
+            ($collections | [splits("[ \t\r\n]+")] | map(select(length > 0) | sub("^(\\./)+"; "") | sub("/+$"; ""))) as $dirs
+            | if type != "object" or (.status | type) != "string" then "unreadable"
+              elif .status == "behind" or .status == "diverged" or .status == "identical" then .status
+              elif .status != "ahead" then "unreadable"
+              elif (.count | type) != "number" or (.names | type) != "array" then "unreadable"
+              elif (.names | all(type == "string" and length > 0) | not) then "unreadable"
+              elif .count >= 300 then "truncated"
+              elif ($dirs | all(plain) | not) then "collections"
+              elif any(.names[]; . == ".github/workflows/capstone-sync.yml") then "caller"
+              elif any(.names[]; split("/")[0] | test("\\.(csv|schema\\.json)$")) then "root"
+              elif any(.names[]; . as $name | any($dirs[]; . as $dir | $name | startswith($dir + "/"))) then "collection"
+              else "same"
+              end' <<< "${comparison}" 2>/dev/null) || verdict=''
+          newer="but ${DEFAULT_BRANCH} is now at ${tip:0:7} and"
+          remedy="an older tree over newer data. Nothing was sent. If the newer commit's own sync did not run or was displaced, start one from ${DEFAULT_BRANCH}: ${fresh}"
+          case "${verdict}" in
+            same)
+              echo "::notice::Syncing ${TRIGGER_SHA:0:7} ${attempt}. ${DEFAULT_BRANCH} is now at ${tip:0:7}, which changed nothing a sync sends."
+              ;;
+            behind | diverged | identical)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, which ${DEFAULT_BRANCH} at ${tip:0:7} does not build on (the comparison says ${verdict}): the branch was rewritten, or this commit was never on it. Nothing was sent. Start a new sync from ${DEFAULT_BRANCH}: ${fresh}"
+              exit 1
+              ;;
+            root)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, ${newer} a newer commit changed a root CSV or schema: ${remedy}"
+              exit 1
+              ;;
+            collection)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, ${newer} a newer commit changed a yaml-collections directory: ${remedy}"
+              exit 1
+              ;;
+            caller)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, ${newer} a newer commit changed capstone-sync.yml, so this run's inputs are old: ${remedy}"
+              exit 1
+              ;;
+            truncated)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, ${newer} differs in 300 files or more, too many to list, so a feed change cannot be ruled out: ${remedy}"
+              exit 1
+              ;;
+            collections)
+              echo "::error::This run ${attempt} would send ${TRIGGER_SHA:0:7}, ${newer} yaml-collections holds a name that cannot be matched against the changed files, so a feed change cannot be ruled out: ${remedy}"
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not compare ${TRIGGER_SHA:0:7} with ${tip:0:7}, the tip of ${DEFAULT_BRANCH}, so this run ${attempt} cannot be shown to send current data. Nothing was sent. Re-run it, or start a new sync from ${DEFAULT_BRANCH}: ${fresh}"
+              exit 1
+              ;;
+          esac
 
       # Before anything is posted: a sync that could not wait for its own import must not run.
       - name: Check rebuild inputs
@@ -298,19 +366,38 @@ jobs:
             end' response.txt 2>/dev/null) || job=''
           # `feedMe` names the Feed Me sequence the sync queued for its CSVs. Null, or no key at
           # all (an image that predates it), is no sequence. Any other shape is not followed.
+          # The key grammar is the issuer's, FeedMeSequence::KEY_PATTERN in craft-data-sync.
           sequence=$(jq -r '
             if type != "object" then error("not an object")
             elif (has("feedMe") | not) or .feedMe == null then "none"
             elif (.feedMe | type) != "object" then error("feedMe is not an object")
             else .feedMe.sequence
-              | if type == "string" and test("^ds[0-9]+$") then . else error("no sequence key") end
+              | if type == "string" and test("^ds[0-9]{7,25}$") then . else error("no sequence key") end
             end' response.txt 2>/dev/null) || sequence=''
           if [[ "${job}" != "none" && ! "${job}" =~ ^[0-9]+$ ]]; then
             echo "::error::The sync response carries neither \"import\": null nor a numeric import job id, so the import cannot be followed. Nothing was rebuilt."
             exit 1
           fi
-          if [[ "${sequence}" != "none" && ! "${sequence}" =~ ^ds[0-9]+$ ]]; then
+          if [[ "${sequence}" != "none" && ! "${sequence}" =~ ^ds[0-9]{7,25}$ ]]; then
             echo "::error::The sync response carries a feedMe value this step cannot follow. Nothing was rebuilt."
+            exit 1
+          fi
+          # A sync asks for a sequence with the query parameter feedMe=queue, name and value
+          # exact. The last `feedMe` wins, as it does when Craft reads the query.
+          asked=''
+          if [[ "${WEBHOOK_URL}" == *\?* ]]; then
+            query="${WEBHOOK_URL#*\?}"
+            IFS='&' read -r -a params <<< "${query%%#*}"
+            for param in "${params[@]}"; do
+              if [[ "${param}" == feedMe=* ]]; then
+                asked="${param#feedMe=}"
+              fi
+            done
+          fi
+          # No sequence is then a CAPSTONE that ignored the request or had nothing to queue.
+          # Following the job alone would rebuild the sites before any CSV import.
+          if [[ "${asked}" == "queue" && "${sequence}" == "none" ]]; then
+            echo "::error::CAPSTONE queued no Feed Me sequence although this sync asked for one (feedMe=queue). Likely an image without the feature, no feed matching the staged CSVs, or a storage account mismatch. The data was sent; only the rebuild was withheld. Nothing was rebuilt."
             exit 1
           fi
           if [[ "${job}" == "none" && "${sequence}" == "none" ]]; then
